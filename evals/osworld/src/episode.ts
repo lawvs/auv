@@ -419,10 +419,11 @@ function podManifest(podName: string, caseId: string): Record<string, unknown> {
           { name: 'DISK_SIZE', value: '32G' },
           { name: 'RAM_SIZE', value: '8G' },
           { name: 'CPU_CORES', value: '4' },
-          // NOTICE: The OSWorld image's dnsmasq can exhaust file descriptors on
-          // this node. QEMU user-mode forwarding keeps the guest ports
-          // reachable without changing node sysctls. Remove when the runtime
-          // image fixes it. Ports: setup API, Chromium CDP, VLC, AUV daemon.
+          // NOTICE: `kubectl port-forward` dials localhost in the Pod, which only
+          // user-mode `hostfwd` (`USER_PORTS`) serves. qemu-docker defaults to
+          // NAT (iptables on eth0) and drops to user mode only when NAT fails,
+          // so pin it. Ports: setup API, Chromium CDP, VLC, AUV daemon.
+          { name: 'NETWORK', value: 'user' },
           { name: 'USER_PORTS', value: `5000,9222,8080,${guestAuvPort}` },
         ],
         image: cluster.runtimeImage,
