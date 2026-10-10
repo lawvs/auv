@@ -184,6 +184,9 @@ export function startLoggedCommand(
         exitCode: output.exitCode,
         outcome,
         signalCode: child.signalCode,
+        // A long-lived `kubectl port-forward` reports dropped streams only on
+        // stderr; keep its tail when a command does not succeed.
+        ...(outcome === 'succeeded' ? {} : { stderrTail: output.stderr.slice(-2_000) }),
       }, 'command completed')
       return output
     },
