@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-10-10T17:55:07.185Z",
+  "checkedAt": "2026-10-10T18:49:47.568Z",
   "checks": [
     {
       "detail": "/tmp/auv-pr258-a2c8ce64/auv-linux-x86_64 sha256=71318ffa3ce484d222e65c44bf83c1f0fc6152d787558384a87da5f6a3e72982",
@@ -53,13 +53,13 @@
       "reproduce": "curl -s http://127.0.0.1:8317/v1/models -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY'"
     },
     {
-      "detail": "2708ms reply=\"OK\"",
+      "detail": "1540ms reply=\"OK\"",
       "name": "chat completion text (gpt-5.5)",
       "ok": true,
       "reproduce": "curl -s http://127.0.0.1:8317/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '{\"messages\":[{\"content\":\"Reply with OK.\",\"role\":\"user\"}],\"model\":\"gpt-5.5\"}'"
     },
     {
-      "detail": "2238ms reply=\"OK\"",
+      "detail": "1493ms reply=\"OK\"",
       "name": "chat completion image (gpt-5.5)",
       "ok": true,
       "reproduce": "curl -s http://127.0.0.1:8317/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '<see src/doctor.ts image payload>'"

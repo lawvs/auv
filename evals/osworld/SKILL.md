@@ -97,8 +97,8 @@ The bridge logs end with `--- stdout (exit N) ---` and the verdict JSON
 
 ## 6. Last cited run
 
-`results/runs/2026-10-11-pr258-a2c8ce64/README.md` records 11 episodes on 6
-tasks with `gpt-5.5`. 9 of 11 scored 1. There were 0 harness errors. The
+`results/runs/2026-10-11-pr258-a2c8ce64/README.md` records 14 episodes on 6
+tasks with `gpt-5.5` in 4 batches. 12 of 14 scored 1. There were 0 harness errors. The
 failures were VS Code theme and GNOME favorites, both agent mistakes. Start
 the next run from its commands.
 

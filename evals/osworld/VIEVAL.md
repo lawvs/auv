@@ -143,7 +143,7 @@ as 0), and pass@k.
 ## Limitations
 
 - **Evidence level:** the checked-in `results/summary.md` names the tasks
-  that ran live. On 2026-10-11, 9 of 11 episodes on 6 tasks scored 1:
+  that ran live. On 2026-10-11, 12 of 14 episodes on 6 tasks scored 1:
   5 `os` tasks and 1 `vs_code` task. See
   `results/runs/2026-10-11-pr258-a2c8ce64/`. Other domains are
   discoverable and pass through the same code path, but they are not proven
@@ -170,6 +170,9 @@ as 0), and pass@k.
   `auv.moeru.ai/osworld-ready=true`. Each Pod requests 8 GiB of memory.
 - **Model access:** CLIProxyAPI routes to Codex OAuth accounts. Quota or
   expired accounts show up as HTTP 429/401 in `doctor` and as `error` records.
+  With no usable account, CLIProxyAPI returns HTTP 503 `auth_unavailable`.
+  This happened once after the cited run and cleared when the quota window
+  reset. Always run `doctor` first.
   The agent retries 429/5xx three times before the case fails.
 
 ## Adapting a Python benchmark to Vieval: checklist
