@@ -1,4 +1,25 @@
-# Run record: 2026-10-11, PR 258 rebased onto main `6d09fbc9`
+# Run record: 2026-10-11, PR 258 rebased onto main `6d09fbc9`, then `7a639d5e`
+
+Main moved twice during this record. Batch 5 ran at `22be28be` (on
+`6d09fbc9`). Batch 6 ran at `fd608ff3` (on `7a639d5e`, #333) with rebuilt
+binaries. After the second rebase, `22be28be` is `e245827c`, `58ebe5ce` is
+`b715438b`, and `358f1684` is `982d8e6f`. The range-diff shows identical
+patches. The hashes below are the ones that ran.
+
+## Batch 6 at `fd608ff3`
+
+| Task | Steps | Score |
+| --- | ---: | ---: |
+| os/e0df059f | 11 | 1 |
+| os/28cc3b7e | 3 | 1 |
+
+- Guest AUV `3d57ba5d4588bbd226c5d7c768d45d299b8eed1eb1ca0e43eac0c48247e33c6f`
+  and host AUV `9f8180751578bd68b4632221e184c348ccb2cb3fcf3ebeb36d6580a20026c944`,
+  both built from `fd608ff3`.
+- `doctor-run-6.txt`: 12/12 checks. `vieval-run-6.log`: cases 2 passed | 0 failed.
+- `e0df059f-final-run6.jpg`: the last guest capture (terminal `mv`, folder renamed).
+
+## Batch 5 at `22be28be`
 
 One Vieval batch at the rebased branch head. It uses the Responses API agent
 default (`358f1684`) and AUV binaries rebuilt from `22be28be`. Each episode

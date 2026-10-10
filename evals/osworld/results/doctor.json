@@ -1,13 +1,13 @@
 {
-  "checkedAt": "2026-10-10T20:04:47.729Z",
+  "checkedAt": "2026-10-10T20:47:29.144Z",
   "checks": [
     {
-      "detail": "/tmp/auv-pr258-22be28be/auv-linux-x86_64 sha256=abd3a262851bce0156a2fdbf69aa89eaaad285551d1c9347a488ea3260b32764",
+      "detail": "/tmp/auv-pr258-fd608ff3/auv-linux-x86_64 sha256=3d57ba5d4588bbd226c5d7c768d45d299b8eed1eb1ca0e43eac0c48247e33c6f",
       "name": "OSWORLD_AUV_LINUX_BINARY",
       "ok": true
     },
     {
-      "detail": "/tmp/auv-pr258-22be28be/auv-macos-arm64 sha256=d4777bc8e17844a458c236794186da1535f079a0d1ffe31ad4209b0efa79db3f",
+      "detail": "/tmp/auv-pr258-fd608ff3/auv-macos-arm64 sha256=9f8180751578bd68b4632221e184c348ccb2cb3fcf3ebeb36d6580a20026c944",
       "name": "OSWORLD_AUV_MACOS_BINARY",
       "ok": true
     },
@@ -20,7 +20,7 @@
       "detail": "auv 0.0.32",
       "name": "host auv runs",
       "ok": true,
-      "reproduce": "/tmp/auv-pr258-22be28be/auv-macos-arm64 --version"
+      "reproduce": "/tmp/auv-pr258-fd608ff3/auv-macos-arm64 --version"
     },
     {
       "detail": "yes",
@@ -29,7 +29,7 @@
       "reproduce": "kubectl --kubeconfig /Users/neko/.kube/config.d/ihome.conf --namespace benchmark-osworld-auv auth can-i create pods"
     },
     {
-      "detail": "node/liet-gpu-1",
+      "detail": "node/liet-gpu-1, node/neko-gpu-1",
       "name": "OSWorld-ready KVM node",
       "ok": true,
       "reproduce": "kubectl --kubeconfig /Users/neko/.kube/config.d/ihome.conf --namespace benchmark-osworld-auv get nodes -l auv.moeru.ai/osworld-ready=true,feature.node.kubernetes.io/kvm=true -o name"
@@ -58,13 +58,13 @@
       "reproduce": "curl -s http://127.0.0.1:8317/v1/models -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY'"
     },
     {
-      "detail": "1999ms reply=\"OK\"",
+      "detail": "1384ms reply=\"OK\"",
       "name": "model reply text (responses, gpt-5.5)",
       "ok": true,
       "reproduce": "curl -s http://127.0.0.1:8317/v1/responses -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '{\"input\":[{\"content\":[{\"text\":\"Reply with OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"model\":\"gpt-5.5\",\"store\":false}'"
     },
     {
-      "detail": "2296ms reply=\"OK\"",
+      "detail": "2269ms reply=\"OK\"",
       "name": "model reply image (responses, gpt-5.5)",
       "ok": true,
       "reproduce": "curl -s http://127.0.0.1:8317/v1/responses -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '<see src/doctor.ts image payload>'"
