@@ -1,31 +1,34 @@
-import { describeTask, expect } from 'vieval'
+import { caseOf, describeTask, expect } from 'vieval'
+import { modelFromRun, openaiFromRunContext } from 'vieval/plugins/chat-models'
 
 import { loadCases } from '../src/cases'
 import { runEpisode } from '../src/episode'
 
-const cases = loadCases()
+// NOTICE: One Vieval task holds every case because Vieval applies its case
+// concurrency cap within a task and runs separate task definitions in this
+// module one after another. The OSWorld domain is the case-name prefix.
+describeTask('osworld', () => {
+  for (const item of loadCases()) {
+    caseOf(`${item.domain}/${item.task.id}`, async (context) => {
+      const { apiKey = '', baseURL = 'https://api.openai.com/v1', model } = openaiFromRunContext(modelFromRun(context, { axis: 'model' }))
+      const repeat = Number(context.task.matrix.run.repeat ?? 1)
+      context.metric('osworld.domain', item.domain)
+      context.metric('osworld.task.file', item.file)
+      context.metric('osworld.evaluator.func', JSON.stringify(item.task.evaluator.func))
+      context.metric('osworld.model', model)
+      context.metric('osworld.repeat', repeat)
 
-describeTask('OSWorld Kubernetes', ({ casesFromInputs }) => {
-  casesFromInputs('OSWorld case', cases, async ({ matrix, metric, score, signal }) => {
-    const item = matrix.inputs
-    metric('benchmark.case.id', item.task.id)
-    metric('osworld.case.id', item.id)
-    metric('osworld.upstream.revision', item.upstream.revision)
-    metric('auv.binary.sha256', item.auv.linuxSha256)
-    metric('auv.macos_binary.sha256', item.auv.macosSha256)
-
-    const result = await runEpisode(item, signal)
-    metric('osworld.pod', result.podName)
-    metric('osworld.evaluator.output', result.evaluatorOutput)
-    metric('auv.run.ids', result.runIds)
-    metric('auv.final_artifact.path', result.artifactPath)
-    metric('auv.final_artifact.sha256', result.artifactSha256)
-    score(result.score, 'exact')
-    expect(result.score).toBe(1)
-  }, {
-    concurrency: 1,
-    timeout: 20 * 60 * 1000,
-  })
+      const result = await runEpisode(item, { apiKey, baseURL, model }, { repeat, signal: context.signal })
+      context.metric('osworld.pod', result.podName)
+      context.metric('osworld.evidence', result.evidenceDirectory)
+      context.metric('osworld.agent.steps', result.agent.steps.length)
+      context.metric('osworld.agent.last_action', result.agent.lastAction ?? 'none')
+      context.metric('auv.run.ids', result.agent.runIds)
+      context.metric('auv.linux_binary.sha256', result.auvLinuxSha256)
+      context.score(result.score, 'exact')
+      expect(result.score).toBe(1)
+    }, { input: item, timeout: 30 * 60 * 1000 })
+  }
 }, {
-  description: 'Runs pinned OSWorld tasks in disposable KVM Pods and scores them with their official evaluators.',
+  description: 'OSWorld tasks in disposable KVM Pods, driven through AUV and scored by the upstream evaluator.',
 })

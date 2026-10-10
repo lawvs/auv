@@ -12,7 +12,7 @@ import { loadCases } from './cases'
  *   -> `process.stdout.write(...)`
  *
  * Use when:
- * - an operator wants to audit task, image, PVC, revision, and port assignments
+ * - an operator wants to audit the selected task set and its evaluators
  * - CI needs to prove that every case configuration can be discovered and parsed
  *
  * Expects:
@@ -23,14 +23,10 @@ import { loadCases } from './cases'
  */
 function main(): void {
   const cases = loadCases().map(item => ({
-    basePvc: item.infrastructure.basePvc,
-    id: item.id,
-    localAuvPort: item.infrastructure.localAuvPort,
-    localSetupPort: item.infrastructure.localSetupPort,
-    namespace: item.infrastructure.namespace,
-    runtimeImage: item.infrastructure.runtimeImage,
-    taskId: item.task.id,
-    upstreamRevision: item.upstream.revision,
+    domain: item.domain,
+    evaluator: item.task.evaluator.func,
+    file: item.file,
+    id: item.task.id,
   }))
   process.stdout.write(`${JSON.stringify(cases, null, 2)}\n`)
 }

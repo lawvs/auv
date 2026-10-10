@@ -1,27 +1,30 @@
+import type { AgentResult, ChatEndpoint } from './agent'
 import type { OsworldCase } from './cases'
 
 import process from 'node:process'
 
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
-import { basename, join, resolve } from 'node:path'
+import { createServer } from 'node:net'
+import { join, resolve } from 'node:path'
 
+import { errorMessageFrom } from '@moeru/std'
+
+import { runAgent } from './agent'
+import { packageDirectory } from './cases'
 import { observeGuestCommand, recordKubernetesResource, runLoggedCommand, startLoggedCommand } from './executionLog'
 import { installRuntimeLibraries } from './guestSetup'
 
 /** Evidence returned from one fresh OSWorld VM episode. */
 export interface EpisodeResult {
-  /** Local copy of the final AUV capture. */
-  artifactPath: string
-  /** SHA-256 declared by AUV and independently checked after download. */
-  artifactSha256: string
-  /** Raw output from the pinned OSWorld evaluator command. */
-  evaluatorOutput: string
+  agent: AgentResult
+  /** SHA-256 of the guest AUV binary, for report provenance. */
+  auvLinuxSha256: string
+  /** Local directory holding `result.json`, AUV runs, and bridge logs. */
+  evidenceDirectory: string
   /** Task-owned Kubernetes Pod name. */
   podName: string
-  /** AUV Run IDs for the before capture, actions, and final capture. */
-  runIds: string[]
-  /** Exact-match score in the normalized `0..1` range. */
+  /** Upstream OSWorld evaluator score in `0..1`. */
   score: number
 }
 
@@ -33,201 +36,119 @@ interface ExecuteResponse {
 }
 
 interface InvokeResponse {
-  artifacts: Array<{
-    file_path: string
-    sha256: string
-  }>
+  artifacts: Array<{ file_path: string, sha256: string }>
   run_id: string
-  status: string
 }
 
-interface PairedAuv {
-  binary: string
-  deviceId: string
-  profilesFile: string
-  storeRoot: string
+/** Guest ports reached through one `kubectl port-forward`. */
+interface Ports {
+  auv: number
+  chromium: number
+  server: number
+  vlc: number
 }
 
 /**
- * Runs one checked-in OSWorld case in a fresh task-owned Kubernetes Pod.
+ * Cluster pins shared by every case. The base PVC holds the read-only
+ * OSWorld `System.qcow2`; see VIEVAL.md for its one-time import.
+ */
+const cluster = {
+  basePvc: 'osworld-v1-base',
+  namespace: process.env.OSWORLD_NAMESPACE ?? 'benchmark-osworld-auv',
+  runtimeImage: 'happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9',
+}
+
+/** Guest port for the AUV daemon; 8080 belongs to OSWorld's VLC getter. */
+const guestAuvPort = 9847
+
+/**
+ * Runs one OSWorld task in a fresh task-owned Kubernetes Pod.
  *
  * Call stack:
  *
- * Vieval `casesFromInputs`
+ * Vieval `caseOf`
  *   -> {@link runEpisode}
- *     -> `kubectl create` / direct Pod port-forward
- *     -> OSWorld setup API
- *     -> paired Linux daemon and same-commit macOS AUV typed invoke commands
- *     -> pinned OSWorld evaluator
- *     -> AUV artifact download
- *     -> UID-scoped task-owned Pod deletion
- *
- * Use when:
- * - Vieval should own the benchmark denominator and case scheduling
- * - each case needs a disposable qcow2 overlay over a read-only OSWorld base PVC
+ *     -> `kubectl create` / `kubectl port-forward`
+ *     -> guest AUV daemon + paired host AUV client
+ *     -> `bridge/osworld_bridge.py setup` (upstream SetupController)
+ *     -> {@link runAgent} (model chooses typed AUV actions)
+ *     -> `bridge/osworld_bridge.py evaluate` (upstream getters and metrics)
+ *     -> UID-scoped Pod deletion
  *
  * Expects:
- * - `OSWORLD_KUBECONFIG` and `OSWORLD_AUV_LINUX_BINARY` to name readable files
- * - the case catalog to pin the image digest, base PVC, task, and AUV digest
- * - Node Feature Discovery to label nodes where KVM is enabled
+ * - `OSWORLD_KUBECONFIG`, `OSWORLD_AUV_LINUX_BINARY`, `OSWORLD_AUV_MACOS_BINARY`
+ * - `pixi install -e osworld` and `scripts/sync-osworld` to have run
  *
  * Returns:
- * - official evaluator output plus AUV Run and artifact evidence
+ * - the upstream score plus AUV Run and agent evidence
  */
-export async function runEpisode(item: OsworldCase, signal: AbortSignal): Promise<EpisodeResult> {
+export async function runEpisode(
+  item: OsworldCase,
+  endpoint: ChatEndpoint,
+  { repeat, signal }: { repeat: number, signal: AbortSignal },
+): Promise<EpisodeResult> {
   const kubeconfig = requiredEnvironment('OSWORLD_KUBECONFIG')
   const auvBinary = resolve(requiredEnvironment('OSWORLD_AUV_LINUX_BINARY'))
   const macosAuvBinary = resolve(requiredEnvironment('OSWORLD_AUV_MACOS_BINARY'))
   const binaryBytes = await readFile(auvBinary)
-  const binarySha256 = createHash('sha256').update(binaryBytes).digest('hex')
-  if (binarySha256 !== item.auv.linuxSha256) {
-    throw new Error(`AUV Linux digest mismatch: expected ${item.auv.linuxSha256}, received ${binarySha256}.`)
-  }
-  const macosBinarySha256 = createHash('sha256').update(await readFile(macosAuvBinary)).digest('hex')
-  if (macosBinarySha256 !== item.auv.macosSha256) {
-    throw new Error(`AUV macOS digest mismatch: expected ${item.auv.macosSha256}, received ${macosBinarySha256}.`)
-  }
+  const auvLinuxSha256 = createHash('sha256').update(binaryBytes).digest('hex')
 
-  const podName = `vieval-osworld-${item.task.id.slice(0, 8)}-${item.infrastructure.localSetupPort}`
-  const evidenceDirectory = join(
-    resolve(import.meta.dirname, '..', '.vieval', 'episodes'),
-    item.id,
-    new Date().toISOString().replaceAll(':', '-'),
-  )
+  const caseId = item.task.id
+  const podName = `osworld-${caseId.slice(0, 8)}-${randomBytes(3).toString('hex')}`
+  const startedAt = new Date()
+  const evidenceDirectory = join(packageDirectory, '.vieval', 'episodes', caseId, `${startedAt.toISOString().replaceAll(':', '-')}-${endpoint.model}-r${repeat}`)
   await mkdir(evidenceDirectory, { recursive: true })
+  // `scripts/summarize.ts` aggregates these records, including errors that
+  // never reached the evaluator, so the denominator stays honest.
+  const record = { domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
 
-  const kubectl = ['--kubeconfig', kubeconfig, '--namespace', item.infrastructure.namespace]
+  const kubectl = ['--kubeconfig', kubeconfig, '--namespace', cluster.namespace]
+  const log = { caseId, podName }
   let podCreated = false
-  let portForward: ReturnType<typeof startLoggedCommand>['process'] | undefined
-  let portForwardCompletion: Promise<void> | undefined
-  let profilesFile: string | undefined
+  let portForward: ReturnType<typeof startLoggedCommand> | undefined
+  const profilesFile = join(evidenceDirectory, 'device-profiles.json')
 
   try {
-    const manifest = podManifest(item, podName)
-    await checked('kubectl', [...kubectl, 'create', '--filename', '-'], {
-      signal,
-      stdin: `${JSON.stringify(manifest)}\n`,
-      timeout: 60_000,
-    }, { caseId: item.id, podName, tool: 'kubectl' })
+    const manifest = podManifest(podName, caseId)
+    await checked('kubectl', [...kubectl, 'create', '--filename', '-'], { signal, stdin: `${JSON.stringify(manifest)}\n`, timeout: 60_000 }, log)
     podCreated = true
-    recordKubernetesResource({
-      action: 'create',
-      apiVersion: 'v1',
-      caseId: item.id,
-      kind: 'Pod',
-      manifest,
-      name: podName,
-      namespace: item.infrastructure.namespace,
-      outcome: 'succeeded',
-    })
+    recordKubernetesResource({ action: 'create', apiVersion: 'v1', caseId, kind: 'Pod', manifest, name: podName, namespace: cluster.namespace, outcome: 'succeeded' })
+    await checked('kubectl', [...kubectl, 'wait', '--for=jsonpath={.status.phase}=Running', '--timeout=8m', `pod/${podName}`], { signal, timeout: 500_000 }, log)
 
-    await checked('kubectl', [
-      ...kubectl,
-      'wait',
-      '--for=jsonpath={.status.phase}=Running',
-      '--timeout=8m',
-      `pod/${podName}`,
-    ], { signal, timeout: 500_000 }, { caseId: item.id, podName, tool: 'kubectl' })
+    const ports: Ports = { auv: await freePort(), chromium: await freePort(), server: await freePort(), vlc: await freePort() }
+    const setupEndpoint = `http://127.0.0.1:${ports.server}`
+    portForward = await connectSetup(kubectl, podName, ports, setupEndpoint, caseId, signal)
 
-    const setupEndpoint = `http://127.0.0.1:${item.infrastructure.localSetupPort}`
-    const activeForward = await connectSetup(
-      kubectl,
-      podName,
-      item.infrastructure.localSetupPort,
-      item.infrastructure.localAuvPort,
-      setupEndpoint,
-      item.id,
+    await installAuv(setupEndpoint, binaryBytes, auvLinuxSha256, log, signal)
+    const deviceId = await pairAuv(setupEndpoint, macosAuvBinary, ports.auv, profilesFile, log, signal)
+    const storeRoot = join(evidenceDirectory, 'auv-runs')
+    const invoke = async (command: string, args: string[]) => await invokeAuv(macosAuvBinary, deviceId, profilesFile, storeRoot, command, args, log, signal)
+
+    const setup = await bridge('setup', item, ports, evidenceDirectory, undefined, log, signal)
+    if (setup.ok !== true) {
+      throw new Error(`OSWorld setup failed for ${caseId}.`)
+    }
+    const agent = await runAgent(item.task.instruction, endpoint, invoke, {
+      maxSteps: Number(process.env.OSWORLD_MAX_STEPS ?? 15),
       signal,
-    )
-    portForward = activeForward.process
-    portForwardCompletion = activeForward.completion
+    })
+    const evaluation = await bridge('evaluate', item, ports, evidenceDirectory, agent.lastAction, log, signal)
+    const score = Number(evaluation.score)
 
-    await installAuv(setupEndpoint, auvBinary, binaryBytes, item.auv.linuxSha256, item.id, podName, signal)
-    await prepareTask(setupEndpoint, item, signal)
-    const pairedAuv = await pairAuv(setupEndpoint, macosAuvBinary, item.infrastructure.localAuvPort, evidenceDirectory, item.id, podName, signal)
-    profilesFile = pairedAuv.profilesFile
-
-    const runIds: string[] = []
-    const beforeCapture = await invokeAuv(pairedAuv, 'display.capture', [], item.id, podName, signal)
-    runIds.push(beforeCapture.run_id)
-
-    for (const action of item.actions) {
-      const result = await invokeAuv(pairedAuv, action.command, action.args, item.id, podName, signal)
-      runIds.push(result.run_id)
-      if (action.settleMs != null && action.settleMs > 0) {
-        await delay(action.settleMs, signal)
-      }
-    }
-
-    const finalCapture = await invokeAuv(pairedAuv, 'display.capture', [], item.id, podName, signal)
-    runIds.push(finalCapture.run_id)
-    const artifact = finalCapture.artifacts[0]
-    if (artifact == null) {
-      throw new Error(`Final AUV capture ${finalCapture.run_id} did not contain an artifact.`)
-    }
-    const artifactPath = artifact.file_path
-    const artifactBytes = await readFile(artifactPath)
-    const downloadedSha256 = createHash('sha256').update(artifactBytes).digest('hex')
-    if (downloadedSha256 !== artifact.sha256) {
-      throw new Error(`Final AUV artifact digest mismatch: expected ${artifact.sha256}, received ${downloadedSha256}.`)
-    }
-    const evaluator = item.task.evaluator
-    const evaluation = await execute(setupEndpoint, {
-      command: evaluator.result.command,
-      shell: evaluator.result.shell,
-    }, signal)
-    const expected = evaluator.expected.rules.expected
-    const score = evaluation.returncode === 0 && evaluation.output === expected ? 1 : 0
-    await writeFile(join(evidenceDirectory, 'result.json'), `${JSON.stringify({
-      artifactPath,
-      artifactSha256: downloadedSha256,
-      evaluatorOutput: evaluation.output,
-      podName,
-      runIds,
-      score,
-      taskId: item.task.id,
-    }, null, 2)}\n`)
-
-    portForward.kill('SIGTERM')
-    await portForwardCompletion
-
-    return {
-      artifactPath,
-      artifactSha256: downloadedSha256,
-      evaluatorOutput: evaluation.output,
-      podName,
-      runIds,
-      score,
-    }
+    await writeResult(evidenceDirectory, { ...record, agent, auvLinuxSha256, score, status: 'evaluated' })
+    return { agent, auvLinuxSha256, evidenceDirectory, podName, score }
+  }
+  catch (error) {
+    await writeResult(evidenceDirectory, { ...record, error: errorMessageFrom(error) ?? 'unknown error', status: 'error' })
+    throw error
   }
   finally {
-    portForward?.kill('SIGTERM')
-    if (profilesFile != null) {
-      await unlink(profilesFile).catch(() => undefined)
-      await unlink(`${profilesFile}.lock`).catch(() => undefined)
-    }
+    portForward?.process.kill('SIGTERM')
+    await unlink(profilesFile).catch(() => undefined)
+    await unlink(`${profilesFile}.lock`).catch(() => undefined)
     if (podCreated && process.env.OSWORLD_KEEP_POD !== 'true') {
-      const deleted = await runLoggedCommand('kubectl', [
-        '--kubeconfig',
-        kubeconfig,
-        '--namespace',
-        item.infrastructure.namespace,
-        'delete',
-        `pod/${podName}`,
-        '--ignore-not-found=true',
-        '--wait=true',
-        '--timeout=2m',
-      ], { timeout: 130_000 }, { caseId: item.id, podName, runtime: 'host', tool: 'kubectl' })
-      recordKubernetesResource({
-        action: 'delete',
-        apiVersion: 'v1',
-        caseId: item.id,
-        exitCode: deleted.exitCode,
-        kind: 'Pod',
-        name: podName,
-        namespace: item.infrastructure.namespace,
-        outcome: deleted.exitCode === 0 ? 'succeeded' : 'failed',
-      })
+      const deleted = await runLoggedCommand('kubectl', [...kubectl, 'delete', `pod/${podName}`, '--ignore-not-found=true', '--wait=true', '--timeout=2m'], { timeout: 130_000 }, { ...log, runtime: 'host', tool: 'kubectl' })
+      recordKubernetesResource({ action: 'delete', apiVersion: 'v1', caseId, exitCode: deleted.exitCode, kind: 'Pod', name: podName, namespace: cluster.namespace, outcome: deleted.exitCode === 0 ? 'succeeded' : 'failed' })
     }
   }
 }
@@ -238,70 +159,96 @@ function assertExecuteSucceeded(result: ExecuteResponse, action: string): void {
   }
 }
 
+/**
+ * Runs one upstream OSWorld setup or evaluation through the Python bridge.
+ *
+ * The bridge runs with the pinned checkout as its working directory because
+ * upstream getters resolve some settings files relative to the repository.
+ */
+async function bridge(
+  command: 'evaluate' | 'setup',
+  item: OsworldCase,
+  ports: Ports,
+  evidenceDirectory: string,
+  lastAction: string | undefined,
+  log: { caseId: string, podName: string },
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const source = resolve(process.env.OSWORLD_SOURCE ?? join(packageDirectory, '.cache', 'OSWorld'))
+  const request = { cacheDir: join(evidenceDirectory, 'osworld-cache'), command, lastAction, ports, task: item.task }
+  const result = await runLoggedCommand('pixi', [
+    'run',
+    '--manifest-path',
+    join(packageDirectory, '..', '..', 'pixi.toml'),
+    '--environment',
+    'osworld',
+    'python',
+    join(packageDirectory, 'bridge', 'osworld_bridge.py'),
+  ], {
+    nodeOptions: { cwd: source, env: { ...process.env, OSWORLD_SOURCE: source } },
+    signal,
+    stdin: JSON.stringify(request),
+    timeout: 15 * 60_000,
+  }, { ...log, runtime: 'host', tool: 'osworld' })
+  await writeFile(join(evidenceDirectory, `bridge-${command}.log`), result.stderr)
+  if (result.exitCode !== 0) {
+    throw new Error(`OSWorld bridge ${command} failed (${String(result.exitCode)}); see bridge-${command}.log.`)
+  }
+  return JSON.parse(result.stdout) as Record<string, unknown>
+}
+
 async function checked(
   command: string,
   args: string[],
   options: { signal?: AbortSignal, stdin?: string, timeout: number },
-  context: { caseId: string, podName: string, tool: 'auv' | 'kubectl' },
+  log: { caseId: string, podName: string },
 ): Promise<void> {
-  const result = await runLoggedCommand(command, args, {
-    signal: options.signal,
-    stdin: options.stdin,
-    timeout: options.timeout,
-  }, { ...context, runtime: 'host' })
+  const result = await runLoggedCommand(command, args, options, { ...log, runtime: 'host', tool: 'kubectl' })
   if (result.exitCode !== 0) {
     throw new Error(`${command} ${args.join(' ')} failed (${String(result.exitCode)}): ${result.stderr || result.stdout}`)
   }
 }
 
+/**
+ * Forwards every guest port OSWorld and AUV need, retrying while QEMU boots.
+ * kubectl exits when the guest port is not yet listening, so each attempt
+ * starts a fresh forward and probes the setup API.
+ */
 async function connectSetup(
   kubectl: string[],
   podName: string,
-  localPort: number,
-  localAuvPort: number,
+  ports: Ports,
   endpoint: string,
   caseId: string,
   signal: AbortSignal,
-): Promise<{ completion: Promise<void>, process: ReturnType<typeof startLoggedCommand>['process'] }> {
-  for (let forwardAttempt = 0; forwardAttempt < 120; forwardAttempt += 1) {
-    const activeCommand = startLoggedCommand('kubectl', [
+): Promise<ReturnType<typeof startLoggedCommand>> {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const forward = startLoggedCommand('kubectl', [
       ...kubectl,
       'port-forward',
       `pod/${podName}`,
-      `${localPort}:5000`,
-      `${localAuvPort}:8080`,
+      `${ports.server}:5000`,
+      `${ports.chromium}:9222`,
+      `${ports.vlc}:8080`,
+      `${ports.auv}:${guestAuvPort}`,
     ], { signal }, { caseId, podName, runtime: 'host', tool: 'kubectl' })
-    const process = activeCommand.process
     let ended = false
-    let exitCode: number | undefined
-    const completion = activeCommand.completion.then((output) => {
+    const completion = forward.completion.then(() => {
       ended = true
-      exitCode = output.exitCode
     })
 
-    for (let probeAttempt = 0; probeAttempt < 4; probeAttempt += 1) {
+    for (let probe = 0; probe < 4; probe += 1) {
       await delay(1_000, signal)
       if (ended) {
         break
       }
-      try {
-        const response = await fetch(`${endpoint}/screenshot`, { signal })
-        if (response.ok) {
-          return { completion, process }
-        }
-      }
-      catch {
-        if (signal.aborted) {
-          throw signal.reason
-        }
+      const response = await fetch(`${endpoint}/screenshot`, { signal }).catch(() => undefined)
+      if (response?.ok === true) {
+        return forward
       }
     }
-
-    process.kill('SIGTERM')
+    forward.process.kill('SIGTERM')
     await completion
-    if (exitCode !== 0 && forwardAttempt === 119) {
-      throw new Error(`kubectl port-forward could not reach the OSWorld setup API (last exit ${String(exitCode)}).`)
-    }
   }
   throw new Error('OSWorld setup API did not become ready within eight minutes.')
 }
@@ -329,18 +276,28 @@ async function execute(endpoint: string, body: { command: string | string[], she
   return await response.json() as ExecuteResponse
 }
 
+/** Reserves an unused local TCP port for one forwarded guest port. */
+async function freePort(): Promise<number> {
+  return await new Promise((resolvePort, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      server.close(() => resolvePort(typeof address === 'object' && address != null ? address.port : 0))
+    })
+  })
+}
+
 async function installAuv(
   endpoint: string,
-  binaryPath: string,
   binaryBytes: Uint8Array,
   expectedSha256: string,
-  caseId: string,
-  podName: string,
+  log: { caseId: string, podName: string },
   signal: AbortSignal,
 ): Promise<void> {
   const form = new FormData()
   form.append('file_path', '/home/user/auv')
-  form.append('file_data', new Blob([new Uint8Array(binaryBytes).buffer]), basename(binaryPath))
+  form.append('file_data', new Blob([new Uint8Array(binaryBytes).buffer]), 'auv')
   const upload = await fetch(`${endpoint}/setup/upload`, { body: form, method: 'POST', signal })
   if (!upload.ok) {
     throw new Error(`OSWorld rejected the AUV upload with HTTP ${upload.status}: ${await upload.text()}`)
@@ -349,15 +306,11 @@ async function installAuv(
   const packages = await installRuntimeLibraries(async () => await execute(endpoint, {
     command: 'echo password | sudo -S apt-get update && echo password | sudo -S apt-get install -y --no-install-recommends libtesseract4 liblept5 tesseract-ocr-eng',
     shell: true,
-  }, signal), signal, { caseId, podName })
+  }, signal), signal, log)
   assertExecuteSucceeded(packages, 'install AUV runtime libraries')
 
-  const launchCommand = `chmod 0755 /home/user/auv && test "$(sha256sum /home/user/auv | cut -d' ' -f1)" = "${expectedSha256}" && rm -f /home/user/auv.sock && nohup env DISPLAY=:0 XDG_SESSION_TYPE=x11 /home/user/auv serve --listen unix:///home/user/auv.sock --listen http://0.0.0.0:8080 --pairing-store /home/user/.local/share/auv-osworld/pairings.json --store-root /home/user/.local/share/auv-osworld --no-register </dev/null >/tmp/auv.log 2>&1 &`
-  const launch = await observeGuestCommand('/bin/sh', ['-c', launchCommand], {
-    caseId,
-    podName,
-    tool: 'auv',
-  }, async () => await execute(endpoint, {
+  const launchCommand = `chmod 0755 /home/user/auv && test "$(sha256sum /home/user/auv | cut -d' ' -f1)" = "${expectedSha256}" && rm -f /home/user/auv.sock && nohup env DISPLAY=:0 XDG_SESSION_TYPE=x11 /home/user/auv serve --listen unix:///home/user/auv.sock --listen http://0.0.0.0:${guestAuvPort} --pairing-store /home/user/.local/share/auv-osworld/pairings.json --store-root /home/user/.local/share/auv-osworld --no-register </dev/null >/tmp/auv.log 2>&1 &`
+  const launch = await observeGuestCommand('/bin/sh', ['-c', launchCommand], { ...log, tool: 'auv' }, async () => await execute(endpoint, {
     command: launchCommand,
     shell: true,
   }, signal), result => result.returncode)
@@ -373,100 +326,43 @@ async function installAuv(
   throw new Error('Guest-local AUV daemon did not create its Unix socket within 60 seconds.')
 }
 
-/**
- * Normalizes the three placeholders used by the checked-in OSWorld setup.
- *
- * Before:
- * - `echo {CLIENT_PASSWORD}`
- * - `click({SCREEN_WIDTH_HALF}, {SCREEN_HEIGHT_HALF})`
- *
- * After:
- * - `echo password`
- * - `click(960, 540)`
- */
-function interpolateSetupValue(value: string): string {
-  return value
-    .replaceAll('{CLIENT_PASSWORD}', 'password')
-    .replaceAll('{SCREEN_WIDTH_HALF}', '960')
-    .replaceAll('{SCREEN_HEIGHT_HALF}', '540')
-}
-
 async function invokeAuv(
-  paired: PairedAuv,
+  binary: string,
+  deviceId: string,
+  profilesFile: string,
+  storeRoot: string,
   command: string,
   args: string[],
-  caseId: string,
-  podName: string,
+  log: { caseId: string, podName: string },
   signal: AbortSignal,
 ): Promise<InvokeResponse> {
-  const result = await runLoggedCommand(paired.binary, [
-    '--device-id',
-    paired.deviceId,
-    'invoke',
-    command,
-    ...args,
-    '--store-root',
-    paired.storeRoot,
-    '--no-overlay',
-    '--json',
-  ], {
-    nodeOptions: {
-      env: {
-        ...process.env,
-        AUV_CONFIG_PROFILES_FILE: paired.profilesFile,
-      },
-    },
+  const result = await runLoggedCommand(binary, ['--device-id', deviceId, 'invoke', command, '--store-root', storeRoot, '--no-overlay', '--json', ...args], {
+    nodeOptions: { env: { ...process.env, AUV_CONFIG_PROFILES_FILE: profilesFile } },
     signal,
     timeout: 120_000,
-  }, { caseId, podName, runtime: 'host', tool: 'auv' })
+  }, { ...log, runtime: 'host', tool: 'auv' })
   if (result.exitCode !== 0) {
     throw new Error(`AUV command ${command} failed (${String(result.exitCode)}): ${result.stderr || result.stdout}`)
   }
-  const parsed: unknown = JSON.parse(result.stdout)
-  if (!isRecord(parsed) || typeof parsed.run_id !== 'string' || parsed.status !== 'completed') {
+  const parsed = JSON.parse(result.stdout) as Partial<InvokeResponse> & { status?: string }
+  if (typeof parsed.run_id !== 'string' || parsed.status !== 'completed') {
     throw new Error(`AUV command ${command} returned an unexpected JSON result: ${result.stdout}`)
   }
-  const artifacts = Array.isArray(parsed.artifacts)
-    ? parsed.artifacts.filter((artifact): artifact is { file_path: string, sha256: string } => {
-        return isRecord(artifact) && typeof artifact.file_path === 'string' && typeof artifact.sha256 === 'string'
-      })
-    : []
-  return {
-    artifacts,
-    run_id: parsed.run_id,
-    status: parsed.status,
-  }
+  return { artifacts: parsed.artifacts ?? [], run_id: parsed.run_id }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
+/** Pairs the host AUV client with the guest daemon and returns the device id. */
 async function pairAuv(
   setupEndpoint: string,
   binary: string,
   localAuvPort: number,
-  evidenceDirectory: string,
-  caseId: string,
-  podName: string,
+  profilesFile: string,
+  log: { caseId: string, podName: string },
   signal: AbortSignal,
-): Promise<PairedAuv> {
-  const tokenCommand = [
-    'env',
-    'AUV_ENDPOINT=unix:///home/user/auv.sock',
-    '/home/user/auv',
-    'devices',
-    'pair',
-    'create-token',
-  ]
-  const tokenResult = await observeGuestCommand(tokenCommand[0], tokenCommand.slice(1), {
-    caseId,
-    podName,
-    tool: 'auv',
-  }, async () => await execute(setupEndpoint, {
-    command: [
-      ...tokenCommand,
-    ],
+): Promise<string> {
+  const tokenCommand = ['env', 'AUV_ENDPOINT=unix:///home/user/auv.sock', '/home/user/auv', 'devices', 'pair', 'create-token']
+  const tokenResult = await observeGuestCommand(tokenCommand[0], tokenCommand.slice(1), { ...log, tool: 'auv' }, async () => await execute(setupEndpoint, {
+    command: tokenCommand,
   }, signal), result => result.returncode)
   assertExecuteSucceeded(tokenResult, 'create the AUV pairing token')
   const token = tokenResult.output.trim()
@@ -474,8 +370,6 @@ async function pairAuv(
     throw new Error('Guest AUV returned an invalid pairing token.')
   }
 
-  const profilesFile = join(evidenceDirectory, 'device-profiles.json')
-  const storeRoot = join(evidenceDirectory, 'auv-runs')
   const connected = await runLoggedCommand(binary, [
     'devices',
     'pair',
@@ -489,32 +383,22 @@ async function pairAuv(
     'osworld-episode',
     '--json',
   ], {
-    nodeOptions: {
-      env: {
-        ...process.env,
-        AUV_CONFIG_PROFILES_FILE: profilesFile,
-      },
-    },
+    nodeOptions: { env: { ...process.env, AUV_CONFIG_PROFILES_FILE: profilesFile } },
     signal,
     stdin: token,
     timeout: 60_000,
-  }, { caseId, podName, runtime: 'host', tool: 'auv' })
+  }, { ...log, runtime: 'host', tool: 'auv' })
   if (connected.exitCode !== 0) {
     throw new Error(`AUV pairing failed (${String(connected.exitCode)}): ${connected.stderr || connected.stdout}`)
   }
-  const enrollment: unknown = JSON.parse(connected.stdout)
-  if (!isRecord(enrollment) || typeof enrollment.device_id !== 'string') {
-    throw new Error(`AUV pairing returned an unexpected response: ${connected.stdout}`)
+  const enrollment = JSON.parse(connected.stdout) as { device_id?: unknown }
+  if (typeof enrollment.device_id !== 'string') {
+    throw new TypeError(`AUV pairing returned an unexpected response: ${connected.stdout}`)
   }
-  return {
-    binary,
-    deviceId: enrollment.device_id,
-    profilesFile,
-    storeRoot,
-  }
+  return enrollment.device_id
 }
 
-function podManifest(item: OsworldCase, podName: string): Record<string, unknown> {
+function podManifest(podName: string, caseId: string): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'Pod',
@@ -522,10 +406,10 @@ function podManifest(item: OsworldCase, podName: string): Record<string, unknown
       labels: {
         'app.kubernetes.io/managed-by': 'vieval',
         'app.kubernetes.io/name': 'osworld-episode',
-        'vieval.dev/case': item.id,
+        'vieval.dev/case': caseId,
       },
       name: podName,
-      namespace: item.infrastructure.namespace,
+      namespace: cluster.namespace,
     },
     spec: {
       containers: [{
@@ -534,11 +418,12 @@ function podManifest(item: OsworldCase, podName: string): Record<string, unknown
           { name: 'RAM_SIZE', value: '8G' },
           { name: 'CPU_CORES', value: '4' },
           // NOTICE: The OSWorld image's dnsmasq can exhaust file descriptors on
-          // this node. QEMU user-mode forwarding keeps the setup API reachable
-          // without changing node sysctls. Remove when the runtime image fixes it.
-          { name: 'USER_PORTS', value: '5000,8080' },
+          // this node. QEMU user-mode forwarding keeps the guest ports
+          // reachable without changing node sysctls. Remove when the runtime
+          // image fixes it. Ports: setup API, Chromium CDP, VLC, AUV daemon.
+          { name: 'USER_PORTS', value: `5000,9222,8080,${guestAuvPort}` },
         ],
-        image: item.infrastructure.runtimeImage,
+        image: cluster.runtimeImage,
         imagePullPolicy: 'IfNotPresent',
         name: 'qemu',
         resources: {
@@ -563,20 +448,10 @@ function podManifest(item: OsworldCase, podName: string): Record<string, unknown
       restartPolicy: 'Never',
       terminationGracePeriodSeconds: 30,
       volumes: [
-        { name: 'image', persistentVolumeClaim: { claimName: item.infrastructure.basePvc, readOnly: true } },
+        { name: 'image', persistentVolumeClaim: { claimName: cluster.basePvc, readOnly: true } },
         { hostPath: { path: '/dev/kvm', type: 'CharDevice' }, name: 'kvm' },
       ],
     },
-  }
-}
-
-async function prepareTask(endpoint: string, item: OsworldCase, signal: AbortSignal): Promise<void> {
-  for (const step of item.task.config) {
-    const command = Array.isArray(step.parameters.command)
-      ? step.parameters.command.map(interpolateSetupValue)
-      : interpolateSetupValue(step.parameters.command)
-    const result = await execute(endpoint, { command, shell: step.parameters.shell }, signal)
-    assertExecuteSucceeded(result, `prepare OSWorld task ${item.task.id}`)
   }
 }
 
@@ -586,4 +461,8 @@ function requiredEnvironment(name: string): string {
     throw new Error(`${name} must name the local input required for an OSWorld run.`)
   }
   return value
+}
+
+async function writeResult(evidenceDirectory: string, result: Record<string, unknown>): Promise<void> {
+  await writeFile(join(evidenceDirectory, 'result.json'), `${JSON.stringify({ ...result, finishedAt: new Date().toISOString() }, null, 2)}\n`)
 }
