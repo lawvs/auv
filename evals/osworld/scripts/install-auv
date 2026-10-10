@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Install, start, and pair a guest AUV daemon in a create-on-k8s OSWorld VM.
+# Idempotent: re-running reuses the saved pairing instead of creating a new one.
+set -euo pipefail
+
+usage() {
+  cat <<'HELP'
+Usage: install-auv RECEIPT.json LINUX_AUV MACOS_AUV PROFILES_FILE
+
+  RECEIPT.json   create-on-k8s OSWorld receipt
+  LINUX_AUV      Linux x86_64 auv built for the guest glibc (Ubuntu 22.04)
+  MACOS_AUV      host auv from the same source commit
+  PROFILES_FILE  host profile store; keep it to reuse the pairing
+
+Environment: KUBECONFIG (same as creation), AUV_LOCAL_SERVER_PORT (15000),
+AUV_LOCAL_PORT (19847; the saved profile endpoint, keep it stable),
+AUV_PROFILE (osworld). Progress goes to stderr; JSON goes to stdout.
+HELP
+}
+fail() { printf 'install-auv: %s\n' "$*" >&2; exit 1; }
+
+[[ ${1:-} == -h || ${1:-} == --help ]] && { usage; exit 0; }
+[[ $# -eq 4 ]] || { usage >&2; exit 1; }
+receipt=$1 linux_auv=$2 macos_auv=$3 profiles=$4
+server_port=${AUV_LOCAL_SERVER_PORT:-15000}
+auv_port=${AUV_LOCAL_PORT:-19847}
+profile=${AUV_PROFILE:-osworld}
+for dependency in curl jq kubectl shasum; do
+  command -v "$dependency" >/dev/null || fail "Missing dependency: $dependency"
+done
+jq -e '.profile == "osworld"' "$receipt" >/dev/null || fail 'Receipt is not an OSWorld receipt'
+kube=(kubectl --context "$(jq -r .context "$receipt")" -n "$(jq -r .namespace "$receipt")")
+pod=$(jq -r .pod "$receipt")
+sha=$(shasum -a 256 "$linux_auv" | cut -d' ' -f1)
+api="http://127.0.0.1:$server_port"
+export AUV_CONFIG_PROFILES_FILE=$profiles
+
+"${kube[@]}" port-forward --address 127.0.0.1 "pod/$pod" "$server_port:5000" "$auv_port:9847" >&2 &
+forward=$!
+trap 'kill "$forward" 2>/dev/null || true' EXIT
+for _ in $(seq 30); do curl -sf -o /dev/null "$api/screenshot" && break; sleep 1; done
+
+# Runs a guest shell command; prints its output and fails on a non-zero status.
+guest() {
+  local response
+  response=$(jq -n --arg command "$1" '{command:$command,shell:true}' |
+    curl -sf -H 'content-type: application/json' --data-binary @- "$api/setup/execute") ||
+    fail "Guest API request failed: $1"
+  jq -e '.returncode == 0' <<<"$response" >/dev/null || fail "Guest command failed: $1: $response"
+  jq -r .output <<<"$response"
+}
+
+# The guest can run only a binary with the expected digest. Upload once.
+if [[ $(guest "sha256sum /home/user/auv 2>/dev/null | cut -d' ' -f1 || true") != "$sha" ]]; then
+  printf 'Uploading %s (%s)\n' "$linux_auv" "$sha" >&2
+  curl -sf -F file_path=/home/user/auv -F "file_data=@$linux_auv" "$api/setup/upload" >/dev/null ||
+    fail 'Guest upload failed'
+  guest "chmod 0755 /home/user/auv && test \"\$(sha256sum /home/user/auv | cut -d' ' -f1)\" = $sha" >/dev/null
+fi
+# OCR runtime libraries; see src/guestSetup.ts for apt lock retries in episodes.
+guest 'dpkg -s libtesseract4 liblept5 tesseract-ocr-eng >/dev/null 2>&1 || { echo password | sudo -S apt-get update && echo password | sudo -S apt-get install -y --no-install-recommends libtesseract4 liblept5 tesseract-ocr-eng; }' >&2
+
+# The pairing store is on the guest disk, so a daemon restart keeps pairings.
+if ! guest 'pgrep -f "^/home/user/auv serve" >/dev/null' >/dev/null 2>&1; then
+  printf 'Starting guest AUV daemon\n' >&2
+  guest 'rm -f /home/user/auv.sock && nohup env DISPLAY=:0 XDG_SESSION_TYPE=x11 /home/user/auv serve --listen unix:///home/user/auv.sock --listen http://0.0.0.0:9847 --pairing-store /home/user/.local/share/auv-osworld/pairings.json --store-root /home/user/.local/share/auv-osworld --no-register </dev/null >>/tmp/auv.log 2>&1 &' >/dev/null
+fi
+for _ in $(seq 60); do guest 'test -S /home/user/auv.sock' >/dev/null 2>&1 && break; sleep 1; done
+guest 'test -S /home/user/auv.sock' >/dev/null || fail 'Guest daemon did not create its socket; see /tmp/auv.log in the guest'
+
+if "$macos_auv" devices profiles get "$profile" --json >/dev/null 2>&1; then
+  printf 'Reusing saved profile %s\n' "$profile" >&2
+  paired=false
+else
+  printf 'Pairing new profile %s\n' "$profile" >&2
+  guest 'AUV_ENDPOINT=unix:///home/user/auv.sock /home/user/auv devices pair create-token' |
+    "$macos_auv" devices pair --endpoint "http://127.0.0.1:$auv_port" connect --token-stdin \
+      --label 'OSWorld create-on-k8s' --profile "$profile" --json >&2
+  paired=true
+fi
+devices=$("$macos_auv" devices list --json)
+jq -e --arg p "$profile" 'tostring | contains($p)' <<<"$devices" >/dev/null || fail "Profile $profile is not listed: $devices"
+displays=$("$macos_auv" --device "$profile" invoke display.list --no-overlay --json)
+jq -n --arg pod "$pod" --arg sha "$sha" --arg profile "$profile" --argjson paired "$paired" \
+  --argjson devices "$devices" --argjson displays "$displays" \
+  '{pod:$pod,auv_linux_sha256:$sha,profile:$profile,paired_now:$paired,devices:$devices,display_list:$displays}'
