@@ -74,6 +74,8 @@ Open `.vieval/episodes/<task>/<time>-<model>-r<n>/`:
 | `kubectl port-forward` `outcome=failed` exit 1 in run.log | Nothing, if the episode continued | Normal. QEMU is still booting, and `connectSetup` retries |
 | A `grep -v exitCode=0` count seems to show failed AUV commands | The line after the match | Typed text with `\n` splits the log line. Count `outcome=failed` instead |
 | Score 1 without `DONE` | `bridge-evaluate.log` getter output | The state was already correct. Some tasks are trivially true (os/b6781586: the guest is already UTC) |
+| `install-auv`: Paired Device is `unauthorized` | `devices list` status | Before `22be28be`: the host profile belongs to a deleted VM. Now the script re-pairs when the guest has no pairing store |
+| `install-auv`: `lost connection to pod`, then `Guest API request failed` | stderr around the apt step | Before `58ebe5ce`: a host client reset the forwarded AUV port while apt ran. Rerun; the script is idempotent. Wait for any queued guest apt to finish |
 | Clicks repeatedly land next to a menu item | The capture before the click, then the 0..1000 grid in `src/agent.ts` | The model mixed up pixels and grid units; this is an agent limit, not AUV |
 
 The bridge logs end with `--- stdout (exit N) ---` and the verdict JSON

@@ -1,13 +1,13 @@
 # OSWorld x Vieval results
 
-Generated 2026-10-10T18:53:35.794Z from `.vieval/episodes`. Errors count as score 0.
+Generated 2026-10-10T20:23:06.668Z from `.vieval/episodes`. Errors count as score 0.
 
-**Overall:** 12/14 episodes scored 1 (85.7%), 0 harness errors. Guest AUV sha256: `71318ffa3ce484d222e65c44bf83c1f0fc6152d787558384a87da5f6a3e72982`.
+**Overall:** 14/16 episodes scored 1 (87.5%), 0 harness errors. Guest AUV sha256: `71318ffa3ce484d222e65c44bf83c1f0fc6152d787558384a87da5f6a3e72982`, `abd3a262851bce0156a2fdbf69aa89eaaad285551d1c9347a488ea3260b32764`.
 
 | Task | Model | Attempts | Errors | Scores | Mean | pass@k |
 | --- | --- | ---: | ---: | --- | ---: | ---: |
-| os/28cc3b7e-b194-4bc9-8353-d04c0f4d56d2 | gpt-5.5 | 4 | 0 | 1, 1, 1, 1 | 1.00 | 1 |
-| os/e0df059f-28a6-4169-924f-b9623e7184cc | gpt-5.5 | 5 | 0 | 1, 1, 1, 1, 1 | 1.00 | 1 |
+| os/28cc3b7e-b194-4bc9-8353-d04c0f4d56d2 | gpt-5.5 | 5 | 0 | 1, 1, 1, 1, 1 | 1.00 | 1 |
+| os/e0df059f-28a6-4169-924f-b9623e7184cc | gpt-5.5 | 6 | 0 | 1, 1, 1, 1, 1, 1 | 1.00 | 1 |
 | os/bedcedc4-4d72-425e-ad62-21960b11fe0d | gpt-5.5 | 2 | 0 | 1, 1 | 1.00 | 1 |
 | os/b6781586-6346-41cd-935a-a6b1487918fc | gpt-5.5 | 1 | 0 | 1 | 1.00 | 1 |
 | vs_code/982d12a5-beab-424f-8d38-d2a48429e511 | gpt-5.5 | 1 | 0 | 0 | 0.00 | 0 |
@@ -31,3 +31,5 @@ Generated 2026-10-10T18:53:35.794Z from `.vieval/episodes`. Errors count as scor
 | 2026-10-10T18:49:54.832Z | bedcedc4 | gpt-5.5 | 1 | evaluated | 1 | 4 | DONE | .vieval/episodes/bedcedc4-4d72-425e-ad62-21960b11fe0d/2026-10-10T18-49-54.832Z-gpt-5.5-r1 |
 | 2026-10-10T18:49:54.847Z | e0df059f | gpt-5.5 | 1 | evaluated | 1 | 8 | DONE | .vieval/episodes/e0df059f-28a6-4169-924f-b9623e7184cc/2026-10-10T18-49-54.847Z-gpt-5.5-r1 |
 | 2026-10-10T18:49:54.866Z | 28cc3b7e | gpt-5.5 | 1 | evaluated | 1 | 4 | DONE | .vieval/episodes/28cc3b7e-b194-4bc9-8353-d04c0f4d56d2/2026-10-10T18-49-54.866Z-gpt-5.5-r1 |
+| 2026-10-10T20:04:48.924Z | 28cc3b7e | gpt-5.5 | 1 | evaluated | 1 | 5 | DONE | .vieval/episodes/28cc3b7e-b194-4bc9-8353-d04c0f4d56d2/2026-10-10T20-04-48.924Z-gpt-5.5-r1 |
+| 2026-10-10T20:04:48.940Z | e0df059f | gpt-5.5 | 1 | evaluated | 1 | 9 | DONE | .vieval/episodes/e0df059f-28a6-4169-924f-b9623e7184cc/2026-10-10T20-04-48.940Z-gpt-5.5-r1 |
