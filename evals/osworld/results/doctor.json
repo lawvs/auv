@@ -1,13 +1,13 @@
 {
-  "checkedAt": "2026-10-10T18:49:47.568Z",
+  "checkedAt": "2026-10-10T20:04:47.729Z",
   "checks": [
     {
-      "detail": "/tmp/auv-pr258-a2c8ce64/auv-linux-x86_64 sha256=71318ffa3ce484d222e65c44bf83c1f0fc6152d787558384a87da5f6a3e72982",
+      "detail": "/tmp/auv-pr258-22be28be/auv-linux-x86_64 sha256=abd3a262851bce0156a2fdbf69aa89eaaad285551d1c9347a488ea3260b32764",
       "name": "OSWORLD_AUV_LINUX_BINARY",
       "ok": true
     },
     {
-      "detail": "/tmp/auv-pr258-a2c8ce64/auv-macos-arm64 sha256=aeb078f0b1ea149f62b3cff084e0edcc6c6e6cfade860ffead8d77ac6bc35084",
+      "detail": "/tmp/auv-pr258-22be28be/auv-macos-arm64 sha256=d4777bc8e17844a458c236794186da1535f079a0d1ffe31ad4209b0efa79db3f",
       "name": "OSWORLD_AUV_MACOS_BINARY",
       "ok": true
     },
@@ -20,7 +20,7 @@
       "detail": "auv 0.0.32",
       "name": "host auv runs",
       "ok": true,
-      "reproduce": "/tmp/auv-pr258-a2c8ce64/auv-macos-arm64 --version"
+      "reproduce": "/tmp/auv-pr258-22be28be/auv-macos-arm64 --version"
     },
     {
       "detail": "yes",
@@ -47,22 +47,27 @@
       "reproduce": "cd /Users/neko/.cache/auv-osworld/OSWorld && PYTHONPATH=. pixi run --manifest-path /Users/neko/Git/github.com/moeru-ai/auv-pr-258/pixi.toml --environment osworld python -c 'import desktop_env.evaluators.metrics, desktop_env.controllers.setup; print(\"ok\")'  # run scripts/sync-osworld first if the checkout is missing"
     },
     {
+      "detail": "responses",
+      "name": "model API (OSWORLD_OPENAI_API)",
+      "ok": true
+    },
+    {
       "detail": "gpt-5.5 listed",
       "name": "model list (http://127.0.0.1:8317/v1)",
       "ok": true,
       "reproduce": "curl -s http://127.0.0.1:8317/v1/models -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY'"
     },
     {
-      "detail": "1540ms reply=\"OK\"",
-      "name": "chat completion text (gpt-5.5)",
+      "detail": "1999ms reply=\"OK\"",
+      "name": "model reply text (responses, gpt-5.5)",
       "ok": true,
-      "reproduce": "curl -s http://127.0.0.1:8317/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '{\"messages\":[{\"content\":\"Reply with OK.\",\"role\":\"user\"}],\"model\":\"gpt-5.5\"}'"
+      "reproduce": "curl -s http://127.0.0.1:8317/v1/responses -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '{\"input\":[{\"content\":[{\"text\":\"Reply with OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"model\":\"gpt-5.5\",\"store\":false}'"
     },
     {
-      "detail": "1493ms reply=\"OK\"",
-      "name": "chat completion image (gpt-5.5)",
+      "detail": "2296ms reply=\"OK\"",
+      "name": "model reply image (responses, gpt-5.5)",
       "ok": true,
-      "reproduce": "curl -s http://127.0.0.1:8317/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '<see src/doctor.ts image payload>'"
+      "reproduce": "curl -s http://127.0.0.1:8317/v1/responses -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '<see src/doctor.ts image payload>'"
     }
   ]
 }
