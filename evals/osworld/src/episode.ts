@@ -8,7 +8,7 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
 
-import { errorMessageFrom } from '@moeru/std'
+import { errorCauseFrom, errorMessageFrom, errorStackFrom } from '@moeru/std'
 
 import { runAgent } from './agent'
 import { packageDirectory } from './cases'
@@ -60,6 +60,22 @@ const cluster = {
 
 /** Guest port for the AUV daemon; 8080 belongs to OSWorld's VLC getter. */
 const guestAuvPort = 9847
+
+/**
+ * Joins an error's message with its `cause` chain.
+ *
+ * NOTICE: Node's `fetch` reports every transport failure as `fetch failed`
+ * and keeps the reason (`ECONNRESET`, `UND_ERR_SOCKET`, ...) in `cause`.
+ * Vieval prints nothing until the run ends, so `result.json` is the only
+ * place where the reason survives.
+ */
+export function describeError(error: unknown): string {
+  const messages: string[] = []
+  for (let current = error; current != null && messages.length < 5; current = errorCauseFrom(current)) {
+    messages.push(errorMessageFrom(current) ?? String(current))
+  }
+  return messages.join(': ') || 'unknown error'
+}
 
 /**
  * Runs one OSWorld task in a fresh task-owned Kubernetes Pod.
@@ -139,7 +155,7 @@ export async function runEpisode(
     return { agent, auvLinuxSha256, evidenceDirectory, podName, score }
   }
   catch (error) {
-    await writeResult(evidenceDirectory, { ...record, error: errorMessageFrom(error) ?? 'unknown error', status: 'error' })
+    await writeResult(evidenceDirectory, { ...record, error: describeError(error), errorStack: errorStackFrom(error), status: 'error' })
     throw error
   }
   finally {
