@@ -79,6 +79,13 @@ fi
 for _ in $(seq 60); do guest 'test -S /home/user/auv.sock' >/dev/null && break; sleep 1; done
 guest 'test -S /home/user/auv.sock' >/dev/null || fail 'Guest daemon did not create its socket; see /tmp/auv.log in the guest'
 
+# A fresh VM has no guest pairing store, so a saved profile from an earlier
+# VM can only be rejected as unauthorized. Drop it and pair this VM instead.
+if "$macos_auv" devices profiles get "$profile" --json >/dev/null 2>&1 &&
+  ! guest 'test -s /home/user/.local/share/auv-osworld/pairings.json' >/dev/null; then
+  printf 'Dropping profile %s saved for a different VM\n' "$profile" >&2
+  "$macos_auv" devices profiles delete "$profile" >&2
+fi
 if "$macos_auv" devices profiles get "$profile" --json >/dev/null 2>&1; then
   printf 'Reusing saved profile %s\n' "$profile" >&2
   paired=false
