@@ -151,7 +151,10 @@ as 0), and pass@k.
 - **Evidence level:** the checked-in `results/summary.md` names the tasks
   that ran live. On 2026-10-11, 12 of 14 episodes on 6 tasks scored 1:
   5 `os` tasks and 1 `vs_code` task. See
-  `results/runs/2026-10-11-pr258-a2c8ce64/`. Other domains are
+  `results/runs/2026-10-11-pr258-a2c8ce64/`. After rebasing onto main
+  `7a639d5e`, the e0df059f and 28cc3b7e tasks scored 1 again with rebuilt
+  binaries and the Responses API agent. See
+  `results/runs/2026-10-11-pr258-22be28be/`. Other domains are
   discoverable and pass through the same code path, but they are not proven
   until a summary row exists. Office, GIMP, and multi-app tasks are the
   hardest for this small agent.
