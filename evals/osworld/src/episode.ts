@@ -1,4 +1,4 @@
-import type { AgentResult, ChatEndpoint } from './agent'
+import type { AgentResult, ModelEndpoint } from './agent'
 import type { OsworldCase } from './cases'
 
 import process from 'node:process'
@@ -84,7 +84,7 @@ const guestAuvPort = 9847
  */
 export async function runEpisode(
   item: OsworldCase,
-  endpoint: ChatEndpoint,
+  endpoint: ModelEndpoint,
   { repeat, signal }: { repeat: number, signal: AbortSignal },
 ): Promise<EpisodeResult> {
   const kubeconfig = requiredEnvironment('OSWORLD_KUBECONFIG')
@@ -100,7 +100,7 @@ export async function runEpisode(
   await mkdir(evidenceDirectory, { recursive: true })
   // `scripts/summarize.ts` aggregates these records, including errors that
   // never reached the evaluator, so the denominator stays honest.
-  const record = { domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
+  const record = { api: endpoint.api, domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
 
   const kubectl = ['--kubeconfig', kubeconfig, '--namespace', cluster.namespace]
   const log = { caseId, podName }

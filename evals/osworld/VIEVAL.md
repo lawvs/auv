@@ -7,7 +7,7 @@ case runs this pipeline:
 fresh KVM Pod over the read-only OSWorld base image
   -> guest AUV daemon (Linux x86_64) paired with a host AUV client (macOS)
   -> upstream OSWorld setup            (bridge/osworld_bridge.py setup)
-  -> model loop: AUV capture -> chat completion -> one typed AUV input command
+  -> model loop: AUV capture -> model reply (Responses API) -> one typed AUV input command
   -> upstream OSWorld evaluator score  (bridge/osworld_bridge.py evaluate)
   -> Vieval score + metrics, result.json, Pod deleted
 ```
@@ -56,14 +56,19 @@ source commit; the Linux build must run on the guest's glibc (Ubuntu 22.04).
 
 ### Model endpoint
 
-The model is any OpenAI-compatible `/chat/completions` endpoint that accepts
-image input. Vieval's built-in `openai` inference executor carries its
-`baseURL`, `apiKey`, and model name; `src/agent.ts` calls it directly.
+The model is any OpenAI-compatible endpoint that accepts image input. By
+default `src/agent.ts` calls the Responses API (`POST /responses`, with
+`store: false` and the full history resent each step). Set
+`OSWORLD_OPENAI_API=chat` for an endpoint that only serves
+`/chat/completions`. Vieval's built-in `openai` inference executor carries the
+`baseURL`, `apiKey`, and model name; `src/agent.ts` calls the endpoint
+directly, and `pnpm doctor` probes it through the same request code.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `OSWORLD_OPENAI_BASE_URL` | `http://127.0.0.1:8317/v1` | Local CLIProxyAPI (Codex OAuth accounts) |
 | `OSWORLD_OPENAI_API_KEY` | `no-key` placeholder | Needed only for keyed endpoints |
+| `OSWORLD_OPENAI_API` | `responses` | Wire API: `responses` or `chat` (`/chat/completions`) |
 | `OSWORLD_MODEL` | `gpt-5.5` | Comma-separated; each model is one run-matrix row |
 | `OSWORLD_MAX_STEPS` | `15` | Model turns per episode |
 
@@ -71,7 +76,8 @@ Other routes need no code change, only a different base URL:
 
 - **OpenAI or OpenRouter:** set the base URL and API key.
 - **Codex through ACP:** run an ACP-to-chat-completions adapter such as
-  `alint-dev/alint` `packages/model-adapter-acp` and point the base URL at it.
+  `alint-dev/alint` `packages/model-adapter-acp`, point the base URL at it,
+  and set `OSWORLD_OPENAI_API=chat`.
   This was not needed here because CLIProxyAPI already serves Codex models.
 
 ## Diagnose

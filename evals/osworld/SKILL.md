@@ -16,6 +16,7 @@ export OSWORLD_AUV_MACOS_BINARY=/abs/auv-macos-arm64
 export OSWORLD_KUBECONFIG=$HOME/.kube/config.d/ihome.conf
 export OSWORLD_SOURCE=/abs/OSWorld                       # pinned checkout; default .cache/OSWorld
 export OSWORLD_OPENAI_BASE_URL=http://127.0.0.1:8317/v1  # cliproxyapi
+export OSWORLD_OPENAI_API=responses                      # or chat for /chat/completions-only endpoints
 export OSWORLD_MODEL=gpt-5.5
 ```
 
@@ -83,7 +84,8 @@ The bridge logs end with `--- stdout (exit N) ---` and the verdict JSON
 - **Another model:** append it to `OSWORLD_MODEL`, comma-separated. Each model
   is one run-matrix row, and the summary groups by model.
 - **Another endpoint:** change `OSWORLD_OPENAI_BASE_URL` and
-  `OSWORLD_OPENAI_API_KEY`. For Codex over ACP, put an ACP-to-OpenAI adapter
+  `OSWORLD_OPENAI_API_KEY`. Set `OSWORLD_OPENAI_API=chat` when the endpoint
+  has no Responses API. For Codex over ACP, put an ACP-to-OpenAI adapter
   in front of it, for example alint `model-adapter-acp`.
 - **Another domain or task:** no code change. Filter with `OSWORLD_DOMAINS` or
   `OSWORLD_TASK_IDS`. To update the upstream revision, change `revision` in
