@@ -1,4 +1,4 @@
-import { createLogg, Format, setGlobalFormat } from '@guiiai/logg'
+import { writeExecutionLog } from './executionLog'
 
 export interface GuestSetupContext {
   caseId: string
@@ -14,10 +14,6 @@ export interface SetupCommandResult {
 
 const maxAttempts = 60
 const retryDelayMs = 2_000
-
-setGlobalFormat(Format.Pretty)
-
-const setupLog = createLogg('osworld:guest-setup').useGlobalConfig()
 
 /**
  * Installs guest runtime libraries, waiting out transient apt lock contention.
@@ -38,12 +34,12 @@ export async function installRuntimeLibraries(
       return result
     }
 
-    setupLog.withFields({
+    writeExecutionLog('osworld:guest-setup', 'warn', 'apt lock is busy; retrying runtime library installation', {
       ...context,
       attempt,
       maxAttempts,
       retryDelayMs,
-    }).warn('apt lock is busy; retrying runtime library installation')
+    })
     await delay(retryDelayMs, signal)
   }
 
