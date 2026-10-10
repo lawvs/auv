@@ -1,13 +1,13 @@
 {
-  "checkedAt": "2026-10-10T16:47:45.420Z",
+  "checkedAt": "2026-10-10T17:55:07.185Z",
   "checks": [
     {
-      "detail": "/tmp/auv-pr258-linux-x86_64-8c9c2fde sha256=76cbb138eb79cf04bf8ae2448df02c571ad7ff653704c8ab32f0c099e7897c75",
+      "detail": "/tmp/auv-pr258-a2c8ce64/auv-linux-x86_64 sha256=71318ffa3ce484d222e65c44bf83c1f0fc6152d787558384a87da5f6a3e72982",
       "name": "OSWORLD_AUV_LINUX_BINARY",
       "ok": true
     },
     {
-      "detail": "/tmp/auv-pr258-macos-arm64-8c9c2fde sha256=c8804645ed2de165910afa08576d210524dfcbbf273fc44e36caa6567926beda",
+      "detail": "/tmp/auv-pr258-a2c8ce64/auv-macos-arm64 sha256=aeb078f0b1ea149f62b3cff084e0edcc6c6e6cfade860ffead8d77ac6bc35084",
       "name": "OSWORLD_AUV_MACOS_BINARY",
       "ok": true
     },
@@ -17,10 +17,10 @@
       "ok": true
     },
     {
-      "detail": "auv 0.0.31",
+      "detail": "auv 0.0.32",
       "name": "host auv runs",
       "ok": true,
-      "reproduce": "/tmp/auv-pr258-macos-arm64-8c9c2fde --version"
+      "reproduce": "/tmp/auv-pr258-a2c8ce64/auv-macos-arm64 --version"
     },
     {
       "detail": "yes",
@@ -53,13 +53,13 @@
       "reproduce": "curl -s http://127.0.0.1:8317/v1/models -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY'"
     },
     {
-      "detail": "1794ms reply=\"OK\"",
+      "detail": "2708ms reply=\"OK\"",
       "name": "chat completion text (gpt-5.5)",
       "ok": true,
       "reproduce": "curl -s http://127.0.0.1:8317/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '{\"messages\":[{\"content\":\"Reply with OK.\",\"role\":\"user\"}],\"model\":\"gpt-5.5\"}'"
     },
     {
-      "detail": "2529ms reply=\"OK\"",
+      "detail": "2238ms reply=\"OK\"",
       "name": "chat completion image (gpt-5.5)",
       "ok": true,
       "reproduce": "curl -s http://127.0.0.1:8317/v1/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '<see src/doctor.ts image payload>'"
