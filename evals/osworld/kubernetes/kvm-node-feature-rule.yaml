@@ -6,7 +6,7 @@ spec:
   rules:
     - name: KVM is enabled
       labels:
-        feature.node.kubernetes.io/kvm: "true"
+        feature.node.kubernetes.io/kvm: 'true'
       matchFeatures:
         - feature: kernel.kvm
           matchExpressions:

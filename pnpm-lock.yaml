@@ -228,6 +228,9 @@ catalogs:
     unrun:
       specifier: ^0.3.1
       version: 0.3.1
+    vieval:
+      specifier: 0.0.12
+      version: 0.0.12
     vite:
       specifier: ^8.1.0
       version: 8.1.4
@@ -525,7 +528,7 @@ importers:
         specifier: 'catalog:'
         version: 1.3.0
       vieval:
-        specifier: 0.0.12
+        specifier: 'catalog:'
         version: 0.0.12(@types/node@26.1.1)(@vitest/browser-playwright@4.1.10)(@vitest/coverage-v8@4.1.10)(chokidar@5.0.0)(dotenv@17.4.2)(esbuild@0.28.1)(giget@3.3.0)(happy-dom@20.10.6)(jiti@2.7.0)(jsdom@27.4.0)(magicast@0.5.3)(tsx@4.23.12)(yaml@2.9.0)
     devDependencies:
       '@types/node':

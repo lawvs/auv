@@ -12,7 +12,7 @@
   "dependencies": {
     "@guiiai/logg": "catalog:",
     "tinyexec": "catalog:",
-    "vieval": "0.0.12"
+    "vieval": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

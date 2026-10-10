@@ -552,13 +552,13 @@ function podManifest(item: OsworldCase, podName: string): Record<string, unknown
         ],
       }],
       nodeSelector: {
-        'feature.node.kubernetes.io/kvm': 'true',
-        'kubernetes.io/arch': 'amd64',
         // NOTICE: KVM availability does not prove that the pinned OSWorld
         // guest reaches its setup API. Operators add this label only after a
         // live episode probe; adding automatic qualification is deferred until
         // the cluster has a reusable node-conformance controller.
         'auv.moeru.ai/osworld-ready': 'true',
+        'feature.node.kubernetes.io/kvm': 'true',
+        'kubernetes.io/arch': 'amd64',
       },
       restartPolicy: 'Never',
       terminationGracePeriodSeconds: 30,
