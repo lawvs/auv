@@ -101,6 +101,10 @@ succeeded.
   `samples/failure-ec4e3f68-final.webp`.
 - **Pass sample:** `samples/pass-e0df059f-final.webp` shows `todo_list_Jan_2`
   on the desktop after `DONE`.
+- **Terminal captures:** `samples/vieval-batches-terminal.png` (preflight,
+  the three Vieval tails, the summary, no leftover Pods, and the post-run
+  doctor) and `samples/chain-continuity-terminal.png` (one episode from Pod
+  create to Pod delete).
 
 ## Caveats
 
@@ -114,5 +118,15 @@ succeeded.
   final state, so the score is valid. The step count is inflated.
 - Each task has 1 to 4 attempts. The 81.8 % covers the 6 selected tasks. It is
   not a result for the OSWorld benchmark (361 tasks in `test_nogdrive`).
+- **Model access ended after the run.** At 18:40:43Z, about 3 minutes after
+  the last episode finished, CLIProxyAPI began to return
+  `HTTP 503 auth_unavailable: no auth available (providers=codex, model=gpt-5.5)`.
+  The doctor then failed only its two chat-completion checks, and 3 manual
+  `curl` retries at 10-second intervals got the same 503. Only one Codex OAuth
+  account is configured. The next run needs `cliproxyapi --codex-login`, or the
+  account's quota window must reset. No episode in this record is affected:
+  their 103 replies are in `result.json`, and the first 503 log file is
+  `~/.cli-proxy-api/logs/error-v1-chat-completions-2026-10-11T034043-*.log`
+  (local time +09:00).
 - Episodes from 2026-10-10, with older binaries `8c9c2fde`, are kept locally
   in `.vieval/archive-2026-10-10/` and are not part of this summary.
