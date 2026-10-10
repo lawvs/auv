@@ -1,16 +1,16 @@
 # Run record: 2026-10-11, PR 258 AUV `a2c8ce64`
 
-Three Vieval batches, 11 OSWorld episodes, 6 tasks. Each episode used one
+Four Vieval batches, 14 OSWorld episodes, 6 tasks. Each episode used one
 fresh KVM Pod. Every episode reached the upstream evaluator. No episode had a
 harness error.
 
-**Result:** 9 of 11 episodes scored 1 (81.8 %). 4 of 6 tasks have pass@k = 1.
+**Result:** 12 of 14 episodes scored 1 (85.7 %). 4 of 6 tasks have pass@k = 1.
 
 | Task | Instruction (short) | Attempts | Scores | Mean |
 | --- | --- | ---: | --- | ---: |
-| os/e0df059f | Rename `todo_list_Jan_1` to `todo_list_Jan_2` | 4 | 1, 1, 1, 1 | 1.00 |
-| os/28cc3b7e | Set the system volume to the maximum | 3 | 1, 1, 1 | 1.00 |
-| os/bedcedc4 | Set "Dim screen when inactive" to off | 1 | 1 | 1.00 |
+| os/e0df059f | Rename `todo_list_Jan_1` to `todo_list_Jan_2` | 5 | 1, 1, 1, 1, 1 | 1.00 |
+| os/28cc3b7e | Set the system volume to the maximum | 4 | 1, 1, 1, 1 | 1.00 |
+| os/bedcedc4 | Set "Dim screen when inactive" to off | 2 | 1, 1 | 1.00 |
 | os/b6781586 | Set the time zone to UTC+0 (see the note below) | 1 | 1 | 1.00 |
 | vs_code/982d12a5 | Change the VS Code color theme to Visual Studio Dark | 1 | 0 | 0.00 |
 | os/ec4e3f68 | Remove Vim from the favorite apps | 1 | 0 | 0.00 |
@@ -57,7 +57,12 @@ OSWORLD_REPEAT=1 OSWORLD_CONCURRENCY=3 pnpm -s eval:run    # vieval-run-2.log: c
 OSWORLD_TASK_IDS=e0df059f-28a6-4169-924f-b9623e7184cc,ec4e3f68-9ea4-4c18-a5c9-69f89d1178b3 \
 OSWORLD_REPEAT=1 OSWORLD_CONCURRENCY=2 pnpm -s eval:run    # vieval-run-3.log: cases 1 passed | 1 failed
 
-pnpm -s results:summarize                         # 6 task/model rows from 11 episodes
+# Batch 4: confirmation after the model outage, at commit 1347d6b7 (3 min 34 s)
+pnpm -s doctor                                    # 11/11 checks passed -> doctor-run-4.txt
+OSWORLD_TASK_IDS=e0df059f-28a6-4169-924f-b9623e7184cc,28cc3b7e-b194-4bc9-8353-d04c0f4d56d2,bedcedc4-4d72-425e-ad62-21960b11fe0d \
+OSWORLD_REPEAT=1 OSWORLD_CONCURRENCY=3 pnpm -s eval:run    # vieval-run-4.log: cases 3 passed | 0 failed
+
+pnpm -s results:summarize                         # 6 task/model rows from 14 episodes
 ```
 
 The Vieval exit status is 0 even when a case fails. Read the `cases N passed
@@ -76,8 +81,8 @@ The Vieval exit status is 0 even when a case fails. Read the `cases N passed
 | Scoring | `episodes/*/bridge-evaluate.log` holds the upstream getter output, for example `['thunderbird.desktop', 'vim.desktop', 'google-chrome.desktop']` for ec4e3f68. In batch 3 the log ends with the bridge verdict (`--- stdout (exit 0) --- {"score": 0.0}`). Vieval records the same number with `context.score` and asserts `score === 1`. | Verified |
 | Artifacts | `.vieval/episodes/<task>/<time>-<model>-r<n>/` (local, gitignored), plus this committed copy: `result.json`, the bridge logs, and `auv-records.jsonl` (the AUV run-store index) per episode. | Verified |
 
-Command outcomes across all three logs: 308 `succeeded`, 11 `stopped`
-(port-forwards ended at cleanup), and 12 `failed`. All 12 failures are
+Command outcomes across all four logs: 367 `succeeded`, 14 `stopped`
+(port-forwards ended at cleanup), and 15 `failed`. All 15 failures are
 `kubectl port-forward` exit 1 while QEMU is still booting.
 `connectSetup` retries this by design. Every AUV, guest, and bridge command
 succeeded.
@@ -127,6 +132,8 @@ succeeded.
   account's quota window must reset. No episode in this record is affected:
   their 103 replies are in `result.json`, and the first 503 log file is
   `~/.cli-proxy-api/logs/error-v1-chat-completions-2026-10-11T034043-*.log`
-  (local time +09:00).
+  (local time +09:00). **Resolved at 18:49Z without a re-login:** the quota
+  window reset, `doctor` passed 11/11 again (`doctor-run-4.txt`), and batch 4
+  passed 3 of 3 (`samples/pass-e0df059f-run4-final.webp`).
 - Episodes from 2026-10-10, with older binaries `8c9c2fde`, are kept locally
   in `.vieval/archive-2026-10-10/` and are not part of this summary.
