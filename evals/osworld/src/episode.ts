@@ -190,7 +190,9 @@ async function bridge(
     stdin: JSON.stringify(request),
     timeout: 15 * 60_000,
   }, { ...log, runtime: 'host', tool: 'osworld' })
-  await writeFile(join(evidenceDirectory, `bridge-${command}.log`), result.stderr)
+  // The stdout JSON (`{"ok": …}` / `{"score": …}`) is the evaluator verdict;
+  // keep it next to the upstream log so a score can be audited offline.
+  await writeFile(join(evidenceDirectory, `bridge-${command}.log`), `${result.stderr}\n--- stdout (exit ${String(result.exitCode)}) ---\n${result.stdout}\n`)
   if (result.exitCode !== 0) {
     throw new Error(`OSWorld bridge ${command} failed (${String(result.exitCode)}); see bridge-${command}.log.`)
   }

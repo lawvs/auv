@@ -31,6 +31,7 @@ semantics, so no evaluator is re-implemented in TypeScript.
 | `src/summarize.ts` | Aggregates `result.json` files -> `results/summary.{json,md}` |
 | `bridge/` | Python package (Pixi env `osworld`) wrapping upstream `DesktopEnv` setup/evaluate |
 | `results/` | Checked-in doctor output and result summary from the latest recorded run |
+| `results/runs/<date>-<commit>/` | Cited run record: environment, commands, chain evidence, raw logs, per-episode results, failure samples |
 | `SKILL.md` | Operator runbook and checklist for agents continuing this eval |
 
 All process execution (`kubectl`, `auv`, `pixi`) goes through `tinyexec` argv
@@ -134,26 +135,33 @@ Errors write it too, so the denominator stays honest:
 ```
 
 The same directory holds the AUV run store (captures, input records), and
-`bridge-setup.log` / `bridge-evaluate.log`. `results:summarize` groups records
+`bridge-setup.log` / `bridge-evaluate.log`. Each bridge log ends with the
+verdict JSON that the bridge printed (`--- stdout (exit N) ---`). `results:summarize` groups records
 by task and model. It reports attempts, errors, scores, mean (an error counts
 as 0), and pass@k.
 
 ## Limitations
 
 - **Evidence level:** the checked-in `results/summary.md` names the tasks
-  that ran live. Other domains are discoverable and pass through the same
-  code path, but they are not proven until a summary row exists. Office,
-  GIMP, and multi-app tasks are the hardest for this small agent.
+  that ran live. On 2026-10-11, 9 of 11 episodes on 6 tasks scored 1:
+  5 `os` tasks and 1 `vs_code` task. See
+  `results/runs/2026-10-11-pr258-a2c8ce64/`. Other domains are
+  discoverable and pass through the same code path, but they are not proven
+  until a summary row exists. Office, GIMP, and multi-app tasks are the
+  hardest for this small agent.
 - **Agent:** no accessibility tree, no planner, and only the latest
   screenshot plus earlier text replies. This is intentional. To evaluate
   another agent, replace `src/agent.ts` and keep the episode contract
   (`instruction`, `invoke`, terminal `DONE`/`FAIL`). The recorded failures
-  show the cost. In one attempt a click moved focus to a Files search box,
-  and the model then retyped the same command 12 times. In the VS Code
-  attempt it reopened the command palette until the step budget ran out.
+  show the cost. In the VS Code theme task, the model opened Settings
+  instead of the theme picker and split `Ctrl+K Ctrl+T` across two turns.
+  In the GNOME favorites task, AUV opened the correct dock context menu, but
+  the model clicked about 90 grid units to the right of "Remove from
+  Favorites" five times.
 - **Local evidence:** `results/summary.json` keeps every step and reply. The
-  `.vieval/episodes/` captures and Vieval reports are gitignored and exist
-  only on the machine that ran them.
+  full `.vieval/episodes/` captures and Vieval reports are gitignored and
+  exist only on the machine that ran them. A cited run copies its logs,
+  per-episode results, and failure captures into `results/runs/`.
 - **Proxy and Google Drive:** proxy tasks run without the upstream proxy.
   Sites with bot detection can fail regardless of the agent. `test_all`
   Drive tasks need credentials that are not provided.

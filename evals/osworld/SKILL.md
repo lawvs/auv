@@ -39,9 +39,22 @@ export OSWORLD_MODEL=gpt-5.5
 
 ## 3. Record results
 
-- [ ] Run `pnpm -s results:summarize`, then read `results/summary.md`.
+- [ ] Run `pnpm -s results:summarize`, then read `results/summary.md`. The
+      **Overall** line gives the pass count, the error count, and the guest
+      AUV sha256 values. More than one sha256 means that binaries were mixed.
 - [ ] Every attempt has a row. An `error` row is a harness failure, not a
       model failure. Read its message before you retry.
+- [ ] `vieval run` exits 0 even when cases fail. Read the
+      `cases N passed | M failed` line, not the exit status.
+- [ ] Before a new cited run, move the old `.vieval/episodes` and
+      `.vieval/reports` into `.vieval/archive-<date>/`. The summary
+      aggregates every episode that it finds.
+- [ ] Copy the cited evidence to `results/runs/<date>-<commit>/`. Copy the
+      ANSI-stripped `vieval run` logs (`sed 's/\x1b\[[0-9;]*m//g'`), and for
+      each episode `result.json`, `bridge-*.log`, and
+      `auv-runs/records.jsonl`. Add the final capture `.webp` of each failure.
+      Write a `README.md` with the environment, the commands, and the chain
+      evidence. Use `results/runs/2026-10-11-pr258-a2c8ce64/` as the template.
 - [ ] Commit `results/summary.{json,md}` and `results/doctor.json` only when
       they describe a run that you want to cite.
 
@@ -57,6 +70,13 @@ Open `.vieval/episodes/<task>/<time>-<model>-r<n>/`:
 | AUV pairing or invoke failed | run.log `tool=auv` | Linux and macOS binaries differ, or the guest daemon crashed (`/tmp/auv.log` in the guest) |
 | `Chat completion failed with HTTP …` | `pnpm doctor` | Proxy down, model name wrong, quota 429, OAuth expired |
 | `status: evaluated`, score 0 | `result.json` `agent.steps`, `auv-runs/` captures | The model did the wrong thing; this is a real result |
+| `kubectl port-forward` `outcome=failed` exit 1 in run.log | Nothing, if the episode continued | Normal. QEMU is still booting, and `connectSetup` retries |
+| A `grep -v exitCode=0` count seems to show failed AUV commands | The line after the match | Typed text with `\n` splits the log line. Count `outcome=failed` instead |
+| Score 1 without `DONE` | `bridge-evaluate.log` getter output | The state was already correct. Some tasks are trivially true (os/b6781586: the guest is already UTC) |
+| Clicks repeatedly land next to a menu item | The capture before the click, then the 0..1000 grid in `src/agent.ts` | The model mixed up pixels and grid units; this is an agent limit, not AUV |
+
+The bridge logs end with `--- stdout (exit N) ---` and the verdict JSON
+(`{"ok": true}` or `{"score": 0.0}`). Use it to audit a score offline.
 
 ## 5. Extend
 
@@ -75,7 +95,14 @@ Open `.vieval/episodes/<task>/<time>-<model>-r<n>/`:
 - Keep the agent small and keep the evaluators upstream. Do not port Python
   metrics to TypeScript.
 
-## 6. Do not
+## 6. Last cited run
+
+`results/runs/2026-10-11-pr258-a2c8ce64/README.md` records 11 episodes on 6
+tasks with `gpt-5.5`. 9 of 11 scored 1. There were 0 harness errors. The
+failures were VS Code theme and GNOME favorites, both agent mistakes. Start
+the next run from its commands.
+
+## 7. Do not
 
 - Do not use `lh workspace use`, and do not change the cluster scheduling labels.
 - Do not run `OSWORLD_CONCURRENCY` above the number of free 8 GiB slots on the node.

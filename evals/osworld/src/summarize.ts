@@ -8,6 +8,7 @@ import { packageDirectory } from './cases'
 /** One `result.json` written by `runEpisode`, for evaluated and failed episodes alike. */
 interface EpisodeRecord {
   agent?: { lastAction?: string, steps: unknown[] }
+  auvLinuxSha256?: string
   domain: string
   error?: string
   evidence: string
@@ -62,13 +63,18 @@ function main(): void {
     }
   })
 
+  const passed = records.filter(record => record.status === 'evaluated' && Number(record.score) >= 1).length
+  const errors = records.filter(record => record.status === 'error').length
+  const binaries = [...new Set(records.map(record => record.auvLinuxSha256).filter(Boolean))]
   const output = join(packageDirectory, 'results')
   mkdirSync(output, { recursive: true })
-  writeFileSync(join(output, 'summary.json'), `${JSON.stringify({ generatedAt: new Date().toISOString(), records, rows }, null, 2)}\n`)
+  writeFileSync(join(output, 'summary.json'), `${JSON.stringify({ generatedAt: new Date().toISOString(), overall: { auvLinuxSha256: binaries, episodes: records.length, errors, passed }, records, rows }, null, 2)}\n`)
   writeFileSync(join(output, 'summary.md'), [
     '# OSWorld x Vieval results',
     '',
     `Generated ${new Date().toISOString()} from \`${relative(packageDirectory, episodes)}\`. Errors count as score 0.`,
+    '',
+    `**Overall:** ${passed}/${records.length} episodes scored 1 (${records.length > 0 ? (100 * passed / records.length).toFixed(1) : '0.0'}%), ${errors} harness errors. Guest AUV sha256: ${binaries.map(sha => `\`${sha}\``).join(', ') || '-'}.`,
     '',
     '| Task | Model | Attempts | Errors | Scores | Mean | pass@k |',
     '| --- | --- | ---: | ---: | --- | ---: | ---: |',
