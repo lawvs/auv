@@ -8,9 +8,10 @@ Use `--profile selkies` for the original Plasma GPU X11 desktop through HAMi DRA
 evaluation, and AUV installation/pairing remain separate work.
 
 The [Vieval-managed live path](VIEVAL.md) provisions one fresh VM per
-case, uploads paired Linux/macOS AUV binaries, runs typed AUV operations, and
-uses the pinned upstream evaluator as the semantic scoring authority. Its first
-checked-in deterministic case completed with exact score `1`.
+case, uploads paired Linux/macOS AUV binaries, lets a configured model choose
+typed AUV operations, and uses the pinned upstream evaluator as the semantic
+scoring authority. [SKILL.md](SKILL.md) is the operator checklist, and
+[results/summary.md](results/summary.md) records the live runs.
 
 ## Before you start
 

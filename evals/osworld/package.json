@@ -5,12 +5,15 @@
   "description": "OSWorld Kubernetes episodes scheduled and scored by Vieval.",
   "scripts": {
     "cases:list": "tsx ./src/listCases.ts",
+    "doctor": "tsx ./src/doctor.ts",
     "eval:run": "vieval run --config ./vieval.config.ts --project osworld-kubernetes --report-out ./.vieval/reports",
+    "results:summarize": "tsx ./src/summarize.ts",
     "test:run": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@guiiai/logg": "catalog:",
+    "@moeru/std": "catalog:",
     "tinyexec": "catalog:",
     "vieval": "catalog:"
   },

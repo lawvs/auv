@@ -11,7 +11,7 @@ export interface CommandLogContext {
   /** Where the process is executed. */
   runtime: 'guest' | 'host'
   /** Process family, used to filter AUV from kubectl activity. */
-  tool: 'auv' | 'kubectl'
+  tool: 'auv' | 'kubectl' | 'osworld'
 }
 
 export interface KubernetesResourceLog {
