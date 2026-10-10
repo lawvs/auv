@@ -1,6 +1,9 @@
+import process from 'node:process'
+
 import { caseOf, describeTask, expect } from 'vieval'
 import { modelFromRun, openaiFromRunContext } from 'vieval/plugins/chat-models'
 
+import { modelApiFrom } from '../src/agent'
 import { loadCases } from '../src/cases'
 import { runEpisode } from '../src/episode'
 
@@ -15,10 +18,12 @@ describeTask('osworld', () => {
       context.metric('osworld.domain', item.domain)
       context.metric('osworld.task.file', item.file)
       context.metric('osworld.evaluator.func', JSON.stringify(item.task.evaluator.func))
+      const api = modelApiFrom(process.env.OSWORLD_OPENAI_API)
       context.metric('osworld.model', model)
+      context.metric('osworld.model.api', api)
       context.metric('osworld.repeat', repeat)
 
-      const result = await runEpisode(item, { apiKey, baseURL, model }, { repeat, signal: context.signal })
+      const result = await runEpisode(item, { api, apiKey, baseURL, model }, { repeat, signal: context.signal })
       context.metric('osworld.pod', result.podName)
       context.metric('osworld.evidence', result.evidenceDirectory)
       context.metric('osworld.agent.steps', result.agent.steps.length)

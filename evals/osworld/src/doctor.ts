@@ -1,3 +1,5 @@
+import type { ModelApi, ModelEndpoint, Prompt } from './agent'
+
 import process from 'node:process'
 
 import { createHash } from 'node:crypto'
@@ -5,8 +7,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { errorMessageFrom } from '@moeru/std'
 import { x } from 'tinyexec'
 
+import { complete, modelApiFrom, requestFor } from './agent'
 import { packageDirectory } from './cases'
 
 interface Check {
@@ -29,7 +33,8 @@ const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAA
  *   -> environment and binary digests
  *   -> `kubectl auth can-i` / node label / base PVC (tinyexec)
  *   -> `pixi run -e osworld python -c "import desktop_env"` (tinyexec)
- *   -> `GET /models`, text and image `POST /chat/completions`
+ *   -> `GET /models`, text and image replies through {@link complete}
+ *      (`POST /responses`, or `/chat/completions` with `OSWORLD_OPENAI_API=chat`)
  *   -> `results/doctor.json`
  *
  * Returns:
@@ -81,7 +86,16 @@ async function main(): Promise<void> {
   })
 
   const baseURL = (env.OSWORLD_OPENAI_BASE_URL ?? 'http://127.0.0.1:8317/v1').replace(/\/$/, '')
-  const headers = { 'authorization': `Bearer ${env.OSWORLD_OPENAI_API_KEY || 'no-key'}`, 'content-type': 'application/json' }
+  const apiKey = env.OSWORLD_OPENAI_API_KEY || 'no-key'
+  const headers = { 'authorization': `Bearer ${apiKey}`, 'content-type': 'application/json' }
+  let api: ModelApi | undefined
+  try {
+    api = modelApiFrom(env.OSWORLD_OPENAI_API)
+    add({ detail: api, name: 'model API (OSWORLD_OPENAI_API)', ok: true })
+  }
+  catch (error) {
+    add({ detail: errorMessageFrom(error) ?? String(error), name: 'model API (OSWORLD_OPENAI_API)', ok: false })
+  }
   for (const model of (env.OSWORLD_MODEL ?? 'gpt-5.5').split(',').map(item => item.trim())) {
     const listed = await fetch(`${baseURL}/models`, { headers }).then(async response => [response.status, await response.text()] as const).catch((error: unknown) => [0, String(error)] as const)
     add({
@@ -90,27 +104,32 @@ async function main(): Promise<void> {
       ok: listed[0] === 200 && listed[1].includes(`"${model}"`),
       reproduce: `curl -s ${baseURL}/models -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY'`,
     })
-    for (const [kind, content] of [
-      ['text', 'Reply with OK.'],
-      ['image', [{ text: 'Reply with OK if you can see an image.', type: 'text' }, { image_url: { url: `data:image/png;base64,${pixel}` }, type: 'image_url' }]],
-    ] as const) {
-      const body = JSON.stringify({ messages: [{ content, role: 'user' }], model })
+    if (api == null) {
+      continue
+    }
+    // Probes go through the agent's own `complete`, so they exercise the same
+    // wire API, request shape, and reply parsing that an episode uses.
+    const endpoint: ModelEndpoint = { api, apiKey, baseURL, model }
+    const probes: Array<[string, Prompt]> = [
+      ['text', { turns: [{ role: 'user', text: 'Reply with OK.' }] }],
+      ['image', { turns: [{ image: `data:image/png;base64,${pixel}`, role: 'user', text: 'Reply with OK if you can see an image.' }] }],
+    ]
+    for (const [kind, prompt] of probes) {
+      const request = requestFor(endpoint, prompt)
       const started = Date.now()
-      const reply = await fetch(`${baseURL}/chat/completions`, { body, headers, method: 'POST', signal: AbortSignal.timeout(120_000) })
-        .then(async response => [response.status, await response.text()] as const)
-        .catch((error: unknown) => [0, String(error)] as const)
-      const message = reply[0] === 200 ? (JSON.parse(reply[1]) as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content : undefined
+      const reply = await complete(endpoint, prompt, AbortSignal.timeout(120_000))
+        .then(text => ({ text }), (error: unknown) => ({ error: errorMessageFrom(error) ?? String(error) }))
       add({
-        detail: reply[0] === 200 ? `${Date.now() - started}ms reply=${JSON.stringify(message)}` : `HTTP ${reply[0]} ${reply[1].slice(0, 300)}`,
-        name: `chat completion ${kind} (${model})`,
-        ok: reply[0] === 200 && typeof message === 'string' && message.length > 0,
-        reproduce: `curl -s ${baseURL}/chat/completions -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '${kind === 'text' ? body : '<see src/doctor.ts image payload>'}'`,
+        detail: 'text' in reply ? `${Date.now() - started}ms reply=${JSON.stringify(reply.text)}` : reply.error.slice(0, 300),
+        name: `model reply ${kind} (${api}, ${model})`,
+        ok: 'text' in reply && reply.text.length > 0,
+        reproduce: `curl -s ${request.url} -H 'content-type: application/json' -H 'authorization: Bearer $OSWORLD_OPENAI_API_KEY' -d '${kind === 'text' ? request.body : '<see src/doctor.ts image payload>'}'`,
       })
     }
   }
 
   const failed = checks.filter(check => !check.ok)
-  if (failed.some(check => check.name.startsWith('model') || check.name.startsWith('chat'))) {
+  if (failed.some(check => check.name.startsWith('model'))) {
     // Only printed on failure: where the local cliproxyapi keeps the state
     // that most often explains a rejected request.
     process.stdout.write([

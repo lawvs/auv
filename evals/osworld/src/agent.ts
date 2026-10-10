@@ -19,15 +19,31 @@ export interface AgentResult {
   steps: Array<{ action: AgentAction, reply: string, runId?: string }>
 }
 
-/** OpenAI-compatible chat endpoint used to choose the next AUV action. */
-export interface ChatEndpoint {
+/** Executes one AUV invoke command and returns its parsed JSON result. */
+export type Invoke = (command: string, args: string[]) => Promise<{ artifacts: Array<{ file_path: string }>, run_id: string }>
+
+/**
+ * OpenAI-compatible wire protocol: `responses` (`POST /responses`, default) or
+ * `chat` (`POST /chat/completions`) for endpoints without the Responses API.
+ */
+export type ModelApi = 'chat' | 'responses'
+
+/** OpenAI-compatible model endpoint used to choose the next AUV action. */
+export interface ModelEndpoint {
+  api: ModelApi
   apiKey: string
   baseURL: string
   model: string
 }
 
-/** Executes one AUV invoke command and returns its parsed JSON result. */
-export type Invoke = (command: string, args: string[]) => Promise<{ artifacts: Array<{ file_path: string }>, run_id: string }>
+/**
+ * One model request independent of the wire protocol. The last user turn may
+ * carry one screenshot as a data URL.
+ */
+export interface Prompt {
+  instructions?: string
+  turns: Array<{ image?: string, role: 'assistant' | 'user', text: string }>
+}
 
 const systemPrompt = `You operate an Ubuntu GNOME desktop to complete the user's task.
 Each turn you receive the current screenshot. Reply with exactly one JSON object and nothing else:
@@ -42,6 +58,54 @@ Actions (x and y are integers on a 0..1000 grid over the screenshot; 0,0 is top-
 {"type":"done"}  the task is complete
 {"type":"fail"}  the task is impossible
 The user password is "password".`
+
+/**
+ * Requests one model reply, retrying transient proxy failures.
+ *
+ * Network errors, 429, and 5xx are retried at most three times with a short
+ * linear backoff; other HTTP errors fail the case immediately.
+ *
+ * Use when:
+ * - the agent loop needs the next decision
+ * - `doctor` probes that the configured endpoint answers the same request shape
+ *
+ * Returns:
+ * - the reply text, or an empty string when the model returned no text
+ */
+export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: AbortSignal): Promise<string> {
+  const request = requestFor(endpoint, prompt)
+  for (let attempt = 1; ; attempt += 1) {
+    const response = await fetch(request.url, {
+      body: request.body,
+      headers: { 'authorization': `Bearer ${endpoint.apiKey}`, 'content-type': 'application/json' },
+      method: 'POST',
+      signal,
+    }).catch((error: unknown) => {
+      if (attempt >= 3 || signal.aborted) {
+        throw error
+      }
+      return undefined
+    })
+    if (response?.ok === true) {
+      return replyText(endpoint.api, await response.json())
+    }
+    if (response != null && ((response.status < 500 && response.status !== 429) || attempt >= 3)) {
+      throw new Error(`Model request to ${request.url} failed with HTTP ${response.status}: ${await response.text()}`)
+    }
+    await new Promise(resolve => setTimeout(resolve, attempt * 5_000))
+  }
+}
+
+/** Reads `OSWORLD_OPENAI_API`; unset or empty selects the Responses API. */
+export function modelApiFrom(value: string | undefined): ModelApi {
+  if (value == null || value === '' || value === 'responses') {
+    return 'responses'
+  }
+  if (value === 'chat') {
+    return 'chat'
+  }
+  throw new Error(`OSWORLD_OPENAI_API must be "responses" or "chat", got ${JSON.stringify(value)}.`)
+}
 
 /**
  * Extracts the first complete JSON object from a reply; anything else becomes
@@ -86,6 +150,39 @@ export function parseAction(reply: string): AgentAction {
 }
 
 /**
+ * Renders a {@link Prompt} into one wire request. Exported so `doctor` can
+ * print the exact body it sent as a reproduce command.
+ */
+export function requestFor(endpoint: ModelEndpoint, prompt: Prompt): { body: string, url: string } {
+  const baseURL = endpoint.baseURL.replace(/\/$/, '')
+  if (endpoint.api === 'chat') {
+    const messages = [
+      ...(prompt.instructions == null ? [] : [{ content: prompt.instructions, role: 'system' }]),
+      ...prompt.turns.map(turn => ({
+        content: turn.image == null
+          ? turn.text
+          : [{ text: turn.text, type: 'text' }, { image_url: { url: turn.image }, type: 'image_url' }],
+        role: turn.role,
+      })),
+    ]
+    return { body: JSON.stringify({ messages, model: endpoint.model }), url: `${baseURL}/chat/completions` }
+  }
+  const input = prompt.turns.map(turn => ({
+    content: turn.role === 'assistant'
+      ? [{ text: turn.text, type: 'output_text' }]
+      : [{ text: turn.text, type: 'input_text' }, ...(turn.image == null ? [] : [{ image_url: turn.image, type: 'input_image' }])],
+    role: turn.role,
+  }))
+  // NOTICE: `store: false` keeps every step a self-contained request (history
+  // is resent, no `previous_response_id`), so a step can be replayed from the
+  // episode evidence alone and no conversation state lives at the provider.
+  return {
+    body: JSON.stringify({ input, instructions: prompt.instructions, model: endpoint.model, store: false }),
+    url: `${baseURL}/responses`,
+  }
+}
+
+/**
  * Runs a bounded screenshot -> model -> AUV action loop.
  *
  * Call stack:
@@ -93,7 +190,7 @@ export function parseAction(reply: string): AgentAction {
  * {@link runEpisode}
  *   -> {@link runAgent}
  *     -> `display.capture` (AUV)
- *     -> `POST {baseURL}/chat/completions`
+ *     -> {@link complete} (`POST {baseURL}/responses` or `/chat/completions`)
  *     -> one typed `input.*` command (AUV)
  *
  * Use when:
@@ -107,12 +204,12 @@ export function parseAction(reply: string): AgentAction {
  */
 export async function runAgent(
   instruction: string,
-  endpoint: ChatEndpoint,
+  endpoint: ModelEndpoint,
   invoke: Invoke,
   options: { maxSteps: number, signal: AbortSignal },
 ): Promise<AgentResult> {
   const result: AgentResult = { runIds: [], steps: [] }
-  const history: Array<{ content: string, role: 'assistant' }> = []
+  const history: Prompt['turns'] = []
 
   for (let step = 0; step < options.maxSteps; step += 1) {
     const capture = await invoke('display.capture', [])
@@ -122,20 +219,20 @@ export async function runAgent(
       throw new Error(`AUV capture ${capture.run_id} returned no image artifact.`)
     }
 
-    const reply = await complete(endpoint, [
-      { content: systemPrompt, role: 'system' },
-      { content: `Task: ${instruction}`, role: 'user' },
-      // Only the latest screenshot is sent; earlier turns keep their text.
-      ...history,
-      {
-        content: [
-          { text: `Step ${step + 1} of ${options.maxSteps}. Current screenshot:`, type: 'text' },
-          { image_url: { url: `data:image/webp;base64,${(await readFile(image)).toString('base64')}` }, type: 'image_url' },
-        ],
-        role: 'user',
-      },
-    ], options.signal)
-    history.push({ content: reply, role: 'assistant' })
+    const reply = await complete(endpoint, {
+      instructions: systemPrompt,
+      turns: [
+        { role: 'user', text: `Task: ${instruction}` },
+        // Only the latest screenshot is sent; earlier turns keep their text.
+        ...history,
+        {
+          image: `data:image/webp;base64,${(await readFile(image)).toString('base64')}`,
+          role: 'user',
+          text: `Step ${step + 1} of ${options.maxSteps}. Current screenshot:`,
+        },
+      ],
+    }, options.signal)
+    history.push({ role: 'assistant', text: reply })
 
     const action = parseAction(reply)
     if (action.type === 'done' || action.type === 'fail') {
@@ -187,32 +284,16 @@ export function toInvocation(action: AgentAction): [string, string[]] | undefine
   }
 }
 
-/**
- * Requests one chat completion, retrying transient proxy failures.
- *
- * Network errors, 429, and 5xx are retried at most three times with a short
- * linear backoff; other HTTP errors fail the case immediately.
- */
-async function complete(endpoint: ChatEndpoint, messages: unknown[], signal: AbortSignal): Promise<string> {
-  for (let attempt = 1; ; attempt += 1) {
-    const response = await fetch(`${endpoint.baseURL.replace(/\/$/, '')}/chat/completions`, {
-      body: JSON.stringify({ messages, model: endpoint.model }),
-      headers: { 'authorization': `Bearer ${endpoint.apiKey}`, 'content-type': 'application/json' },
-      method: 'POST',
-      signal,
-    }).catch((error: unknown) => {
-      if (attempt >= 3 || signal.aborted) {
-        throw error
-      }
-      return undefined
-    })
-    if (response?.ok === true) {
-      const body = await response.json() as { choices: Array<{ message: { content: string } }> }
-      return body.choices[0]?.message.content ?? ''
-    }
-    if (response != null && ((response.status < 500 && response.status !== 429) || attempt >= 3)) {
-      throw new Error(`Chat completion failed with HTTP ${response.status}: ${await response.text()}`)
-    }
-    await new Promise(resolve => setTimeout(resolve, attempt * 5_000))
+/** Extracts the assistant text; Responses output may also hold reasoning items. */
+function replyText(api: ModelApi, body: unknown): string {
+  if (api === 'chat') {
+    return (body as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? ''
   }
+  const output = (body as { output?: Array<{ content?: Array<{ text?: string, type: string }>, type: string }> }).output ?? []
+  return output
+    .filter(item => item.type === 'message')
+    .flatMap(item => item.content ?? [])
+    .filter(part => part.type === 'output_text')
+    .map(part => part.text ?? '')
+    .join('')
 }

@@ -1,6 +1,100 @@
-import { describe, expect, it } from 'vitest'
+import type { Invoke, ModelEndpoint } from './agent'
 
-import { parseAction, toInvocation } from './agent'
+import { Buffer } from 'node:buffer'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { modelApiFrom, parseAction, runAgent, toInvocation } from './agent'
+
+/** AUV stub: `display.capture` returns a real file, input commands succeed. */
+async function stubInvoke(): Promise<{ commands: string[], invoke: Invoke }> {
+  const image = join(await mkdtemp(join(tmpdir(), 'osworld-agent-')), 'capture.webp')
+  await writeFile(image, 'webp-bytes')
+  const commands: string[] = []
+  return {
+    commands,
+    invoke: async (command) => {
+      commands.push(command)
+      return { artifacts: command === 'display.capture' ? [{ file_path: image }] : [], run_id: `run-${commands.length}` }
+    },
+  }
+}
+
+/** Captures every model request and answers from `replies` in order. */
+function stubModel(replies: unknown[]): Array<{ body: Record<string, any>, url: string }> {
+  const requests: Array<{ body: Record<string, any>, url: string }> = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+    requests.push({ body: JSON.parse(String(init.body)), url })
+    return Response.json(replies[requests.length - 1])
+  }))
+  return requests
+}
+
+const endpoint = (api: ModelEndpoint['api']): ModelEndpoint => ({ api, apiKey: 'k', baseURL: 'http://proxy.test/v1/', model: 'm' })
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('runAgent model API', () => {
+  it('sends Responses requests and carries earlier replies as assistant output_text', async () => {
+    const typeReply = '{"action":{"type":"type","text":"hi"}}'
+    const requests = stubModel([
+      // Reasoning items precede the message; only output_text is the reply.
+      { output: [{ type: 'reasoning' }, { content: [{ text: typeReply, type: 'output_text' }], type: 'message' }] },
+      { output: [{ content: [{ text: '{"action":{"type":"done"}}', type: 'output_text' }], type: 'message' }] },
+    ])
+    const { commands, invoke } = await stubInvoke()
+
+    const result = await runAgent('do it', endpoint('responses'), invoke, { maxSteps: 3, signal: AbortSignal.timeout(10_000) })
+
+    expect(result.lastAction).toBe('DONE')
+    expect(commands).toEqual(['display.capture', 'input.typeText', 'display.capture'])
+    expect(requests.map(request => request.url)).toEqual(['http://proxy.test/v1/responses', 'http://proxy.test/v1/responses'])
+    const second = requests[1].body
+    expect(second).toMatchObject({ model: 'm', store: false })
+    expect(second.instructions).toContain('Ubuntu GNOME desktop')
+    expect(second.input).toEqual([
+      { content: [{ text: 'Task: do it', type: 'input_text' }], role: 'user' },
+      { content: [{ text: typeReply, type: 'output_text' }], role: 'assistant' },
+      {
+        content: [
+          { text: 'Step 2 of 3. Current screenshot:', type: 'input_text' },
+          { image_url: `data:image/webp;base64,${Buffer.from('webp-bytes').toString('base64')}`, type: 'input_image' },
+        ],
+        role: 'user',
+      },
+    ])
+  })
+
+  it('keeps the Chat Completions shape when OSWORLD_OPENAI_API=chat', async () => {
+    const requests = stubModel([{ choices: [{ message: { content: '{"action":{"type":"fail"}}' } }] }])
+    const { invoke } = await stubInvoke()
+
+    const result = await runAgent('do it', endpoint('chat'), invoke, { maxSteps: 1, signal: AbortSignal.timeout(10_000) })
+
+    expect(result.lastAction).toBe('FAIL')
+    expect(requests[0].url).toBe('http://proxy.test/v1/chat/completions')
+    const messages = requests[0].body.messages
+    expect(messages[0].role).toBe('system')
+    expect(messages.at(-1).content[1]).toEqual({ image_url: { url: `data:image/webp;base64,${Buffer.from('webp-bytes').toString('base64')}` }, type: 'image_url' })
+  })
+})
+
+describe('modelApiFrom', () => {
+  it('defaults to the Responses API', () => {
+    expect(modelApiFrom(undefined)).toBe('responses')
+    expect(modelApiFrom('')).toBe('responses')
+    expect(modelApiFrom('chat')).toBe('chat')
+  })
+
+  it('rejects an unknown API instead of silently falling back', () => {
+    expect(() => modelApiFrom('completions')).toThrow(/responses" or "chat/)
+  })
+})
 
 describe('parseAction', () => {
   // ROOT CAUSE:
