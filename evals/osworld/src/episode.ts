@@ -122,6 +122,8 @@ export async function runEpisode(
   const log = { caseId, podName }
   let podCreated = false
   let portForward: ReturnType<typeof startLoggedCommand> | undefined
+  // Kept outside `try` so an evaluator failure still records what the agent did.
+  let agent: AgentResult | undefined
   const profilesFile = join(evidenceDirectory, 'device-profiles.json')
 
   try {
@@ -144,7 +146,7 @@ export async function runEpisode(
     if (setup.ok !== true) {
       throw new Error(`OSWorld setup failed for ${caseId}.`)
     }
-    const agent = await runAgent(item.task.instruction, endpoint, invoke, {
+    agent = await runAgent(item.task.instruction, endpoint, invoke, {
       maxSteps: Number(process.env.OSWORLD_MAX_STEPS ?? 15),
       signal,
     })
@@ -155,7 +157,7 @@ export async function runEpisode(
     return { agent, auvLinuxSha256, evidenceDirectory, podName, score }
   }
   catch (error) {
-    await writeResult(evidenceDirectory, { ...record, error: describeError(error), errorStack: errorStackFrom(error), status: 'error' })
+    await writeResult(evidenceDirectory, { ...record, agent, error: describeError(error), errorStack: errorStackFrom(error), status: 'error' })
     throw error
   }
   finally {
