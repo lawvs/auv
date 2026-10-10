@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { modelApiFrom, parseAction, runAgent, toInvocation } from './agent'
+import { complete, modelApiFrom, parseAction, runAgent, toInvocation } from './agent'
 
 /** AUV stub: `display.capture` returns a real file, input commands succeed. */
 async function stubInvoke(): Promise<{ commands: string[], invoke: Invoke }> {
@@ -81,6 +81,32 @@ describe('runAgent model API', () => {
     const messages = requests[0].body.messages
     expect(messages[0].role).toBe('system')
     expect(messages.at(-1).content[1]).toEqual({ image_url: { url: `data:image/webp;base64,${Buffer.from('webp-bytes').toString('base64')}` }, type: 'image_url' })
+  })
+})
+
+describe('complete', () => {
+  // ROOT CAUSE:
+  //
+  // If cliproxyapi loses its upstream stream, it answers HTTP 408
+  // ("stream closed before response.completed"). Only 429 and 5xx were
+  // retried, so one dropped stream failed the whole OSWorld episode
+  // (chrome/3720f614 in the 2026-10-11 test_nogdrive run).
+  //
+  // The fix retries 408 like the other transient proxy failures.
+  it('retries a 408 request timeout from the proxy', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? Response.json({ error: { message: 'stream closed before response.completed' } }, { status: 408 })
+        : Response.json({ output: [{ content: [{ text: 'ok', type: 'output_text' }], type: 'message' }] })
+    }))
+    const reply = complete(endpoint('responses'), { turns: [{ role: 'user', text: 'hi' }] }, new AbortController().signal)
+    await vi.runAllTimersAsync()
+    await expect(reply).resolves.toBe('ok')
+    expect(calls).toBe(2)
+    vi.useRealTimers()
   })
 })
 

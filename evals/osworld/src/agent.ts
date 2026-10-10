@@ -62,8 +62,9 @@ The user password is "password".`
 /**
  * Requests one model reply, retrying transient proxy failures.
  *
- * Network errors, 429, and 5xx are retried at most three times with a short
- * linear backoff; other HTTP errors fail the case immediately.
+ * Network errors, 408, 429, and 5xx are retried at most three times with a
+ * short linear backoff; other HTTP errors fail the case immediately. cliproxyapi
+ * answers 408 when its upstream stream closes before `response.completed`.
  *
  * Use when:
  * - the agent loop needs the next decision
@@ -89,7 +90,7 @@ export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: 
     if (response?.ok === true) {
       return replyText(endpoint.api, await response.json())
     }
-    if (response != null && ((response.status < 500 && response.status !== 429) || attempt >= 3)) {
+    if (response != null && (!isTransientStatus(response.status) || attempt >= 3)) {
       throw new Error(`Model request to ${request.url} failed with HTTP ${response.status}: ${await response.text()}`)
     }
     await new Promise(resolve => setTimeout(resolve, attempt * 5_000))
@@ -282,6 +283,10 @@ export function toInvocation(action: AgentAction): [string, string[]] | undefine
     default:
       return undefined
   }
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500
 }
 
 /** Extracts the assistant text; Responses output may also hold reasoning items. */
