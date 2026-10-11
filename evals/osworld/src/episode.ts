@@ -14,7 +14,6 @@ import { AgentRunError, runAgent } from './agent'
 import { startAuvTools } from './auvTools'
 import { packageDirectory } from './cases'
 import { observeGuestCommand, recordKubernetesResource, runLoggedCommand, startLoggedCommand } from './executionLog'
-import { installRuntimeLibraries } from './guestSetup'
 
 /** Evidence returned from one fresh OSWorld VM episode. */
 export interface EpisodeResult {
@@ -56,6 +55,13 @@ const cluster = {
 
 /** Guest port for the AUV daemon; 8080 belongs to OSWorld's VLC getter. */
 const guestAuvPort = 9847
+
+/** A host file uploaded to one guest path and verified there by SHA-256. */
+interface GuestFile {
+  bytes: Uint8Array
+  guestPath: string
+  sha256: string
+}
 
 /**
  * Joins an error's message with its `cause` chain.
@@ -102,8 +108,10 @@ export async function runEpisode(
   const kubeconfig = requiredEnvironment('OSWORLD_KUBECONFIG')
   const auvBinary = resolve(requiredEnvironment('OSWORLD_AUV_LINUX_BINARY'))
   const macosAuvBinary = resolve(requiredEnvironment('OSWORLD_AUV_MACOS_BINARY'))
-  const binaryBytes = await readFile(auvBinary)
-  const auvLinuxSha256 = createHash('sha256').update(binaryBytes).digest('hex')
+  const binary = await guestFile(auvBinary, '/home/user/auv')
+  // `scripts/build-auv-linux` writes the OCR runtime next to the binary.
+  const runtime = await guestFile(`${auvBinary}.runtime.tar.gz`, '/home/user/auv-runtime.tar.gz')
+  const auvLinuxSha256 = binary.sha256
 
   const caseId = item.task.id
   const podName = `osworld-${caseId.slice(0, 8)}-${randomBytes(3).toString('hex')}`
@@ -112,7 +120,7 @@ export async function runEpisode(
   await mkdir(evidenceDirectory, { recursive: true })
   // `scripts/summarize.ts` aggregates these records, including errors that
   // never reached the evaluator, so the denominator stays honest.
-  const record = { api: endpoint.api, domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
+  const record = { api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
 
   const kubectl = ['--kubeconfig', kubeconfig, '--namespace', cluster.namespace]
   const log = { caseId, podName }
@@ -134,7 +142,7 @@ export async function runEpisode(
     const setupEndpoint = `http://127.0.0.1:${ports.server}`
     portForward = await connectSetup(kubectl, podName, ports, setupEndpoint, caseId, signal)
 
-    await installAuv(setupEndpoint, binaryBytes, auvLinuxSha256, log, signal)
+    await installAuv(setupEndpoint, binary, runtime, log, signal)
     const deviceId = await pairAuv(setupEndpoint, macosAuvBinary, ports.auv, profilesFile, log, signal)
     auvTools = await startAuvTools({
       context: log,
@@ -318,41 +326,41 @@ async function freePort(): Promise<number> {
   })
 }
 
+async function guestFile(hostPath: string, guestPath: string): Promise<GuestFile> {
+  const bytes = await readFile(hostPath).catch((error: unknown) => {
+    throw new Error(`Cannot read ${hostPath}; build it with scripts/build-auv-linux.`, { cause: error })
+  })
+  return { bytes, guestPath, sha256: createHash('sha256').update(bytes).digest('hex') }
+}
+
+/**
+ * Uploads AUV and its OCR runtime, then starts the guest daemon.
+ *
+ * NOTICE: The binary's RUNPATH is `$ORIGIN/auv-runtime/lib`, so every guest
+ * `auv` call finds the bundled Tesseract and Leptonica; only the daemon needs
+ * `TESSDATA_PREFIX`. Nothing is installed through apt, which raced with
+ * PackageKit on fresh VMs (82 of 124 episodes waited on the apt lock).
+ */
 async function installAuv(
   endpoint: string,
-  binaryBytes: Uint8Array,
-  expectedSha256: string,
+  binary: GuestFile,
+  runtime: GuestFile,
   log: { caseId: string, podName: string },
   signal: AbortSignal,
 ): Promise<void> {
-  const form = new FormData()
-  form.append('file_path', '/home/user/auv')
-  form.append('file_data', new Blob([new Uint8Array(binaryBytes).buffer]), 'auv')
-  // NOTICE: kubectl port-forward can time out opening a stream for this
-  // first large request while the forward stays up (chrome/a96b564e,
-  // 2026-10-11: `write EPIPE`). The upload overwrites one path, so transport
-  // failures are retried; HTTP errors are not.
-  let upload: Response | undefined
-  for (let attempt = 1; upload == null; attempt += 1) {
-    upload = await fetch(`${endpoint}/setup/upload`, { body: form, method: 'POST', signal }).catch(async (error: unknown) => {
-      if (attempt >= 3 || signal.aborted) {
-        throw error
-      }
-      await delay(3_000, signal)
-      return undefined
-    })
-  }
-  if (!upload.ok) {
-    throw new Error(`OSWorld rejected the AUV upload with HTTP ${upload.status}: ${await upload.text()}`)
-  }
+  await uploadGuestFile(endpoint, binary, signal)
+  await uploadGuestFile(endpoint, runtime, signal)
 
-  const packages = await installRuntimeLibraries(async () => await execute(endpoint, {
-    command: 'echo password | sudo -S apt-get update && echo password | sudo -S apt-get install -y --no-install-recommends libtesseract4 liblept5 tesseract-ocr-eng',
-    shell: true,
-  }, signal), signal, log)
-  assertExecuteSucceeded(packages, 'install AUV runtime libraries')
-
-  const launchCommand = `chmod 0755 /home/user/auv && test "$(sha256sum /home/user/auv | cut -d' ' -f1)" = "${expectedSha256}" && rm -f /home/user/auv.sock && nohup env DISPLAY=:0 XDG_SESSION_TYPE=x11 /home/user/auv serve --listen unix:///home/user/auv.sock --listen http://0.0.0.0:${guestAuvPort} --pairing-store /home/user/.local/share/auv-osworld/pairings.json --store-root /home/user/.local/share/auv-osworld --no-register </dev/null >/tmp/auv.log 2>&1 &`
+  const verified = (file: GuestFile) => `test "$(sha256sum ${file.guestPath} | cut -d' ' -f1)" = "${file.sha256}"`
+  const launchCommand = [
+    `chmod 0755 ${binary.guestPath}`,
+    verified(binary),
+    verified(runtime),
+    'rm -rf /home/user/auv-runtime && mkdir -p /home/user/auv-runtime',
+    `tar -xzf ${runtime.guestPath} -C /home/user/auv-runtime`,
+    'rm -f /home/user/auv.sock',
+    `nohup env DISPLAY=:0 XDG_SESSION_TYPE=x11 TESSDATA_PREFIX=/home/user/auv-runtime/tessdata ${binary.guestPath} serve --listen unix:///home/user/auv.sock --listen http://0.0.0.0:${guestAuvPort} --pairing-store /home/user/.local/share/auv-osworld/pairings.json --store-root /home/user/.local/share/auv-osworld --no-register </dev/null >/tmp/auv.log 2>&1 &`,
+  ].join(' && ')
   const launch = await observeGuestCommand('/bin/sh', ['-c', launchCommand], { ...log, tool: 'auv' }, async () => await execute(endpoint, {
     command: launchCommand,
     shell: true,
@@ -480,6 +488,33 @@ function requiredEnvironment(name: string): string {
     throw new Error(`${name} must name the local input required for an OSWorld run.`)
   }
   return value
+}
+
+/**
+ * Writes one file to the guest through the OSWorld setup API.
+ *
+ * NOTICE: kubectl port-forward can time out opening a stream for a large
+ * request while the forward stays up (chrome/a96b564e, 2026-10-11:
+ * `write EPIPE`). An upload overwrites one path, so transport failures are
+ * retried; HTTP errors are not.
+ */
+async function uploadGuestFile(endpoint: string, file: GuestFile, signal: AbortSignal): Promise<void> {
+  const form = new FormData()
+  form.append('file_path', file.guestPath)
+  form.append('file_data', new Blob([new Uint8Array(file.bytes).buffer]), file.guestPath.split('/').at(-1))
+  let upload: Response | undefined
+  for (let attempt = 1; upload == null; attempt += 1) {
+    upload = await fetch(`${endpoint}/setup/upload`, { body: form, method: 'POST', signal }).catch(async (error: unknown) => {
+      if (attempt >= 3 || signal.aborted) {
+        throw error
+      }
+      await delay(3_000, signal)
+      return undefined
+    })
+  }
+  if (!upload.ok) {
+    throw new Error(`OSWorld rejected the upload of ${file.guestPath} with HTTP ${upload.status}: ${await upload.text()}`)
+  }
 }
 
 async function writeResult(evidenceDirectory: string, result: Record<string, unknown>): Promise<void> {
