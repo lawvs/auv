@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { complete, modelApiFrom, parseDecision, runAgent, toInvocation } from './agent'
+import { AgentRunError, complete, modelApiFrom, parseDecision, runAgent, toInvocation } from './agent'
 
 /** AUV stub: `display.capture` returns a real file, input commands succeed. */
 async function stubInvoke(): Promise<{ commands: string[], invoke: Invoke }> {
@@ -91,6 +91,31 @@ describe('runAgent model API', () => {
     const input = requests[1].body.input
     expect(input[1]).toEqual({ content: [{ text: first, type: 'output_text' }], role: 'assistant' })
     expect(input[2].content[0].text).toBe('Only the first action of your previous reply was executed; the others were ignored. Reply with exactly one action. Step 2 of 3. Current screenshot:')
+  })
+
+  // ROOT CAUSE:
+  //
+  // If a model request failed mid-episode (chrome/47543840: HTTP 400
+  // `invalid_prompt` from moderation), runAgent threw and its earlier steps
+  // were lost, so result.json could not show what the model had seen.
+  //
+  // The fix throws AgentRunError carrying the partial result.
+  it('keeps earlier steps when a later model request fails', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? Response.json({ output: [{ content: [{ text: '{"action":{"type":"type","text":"hi"}}', type: 'output_text' }], type: 'message' }] })
+        : Response.json({ error: { code: 'invalid_prompt' } }, { status: 400 })
+    }))
+    const { invoke } = await stubInvoke()
+
+    const failure = await runAgent('do it', endpoint('responses'), invoke, { maxSteps: 3, signal: AbortSignal.timeout(10_000) }).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(AgentRunError)
+    expect((failure as AgentRunError).message).toBe('Agent stopped after 1 steps')
+    expect((failure as AgentRunError).partial.steps.map(step => step.action.type)).toEqual(['type'])
+    expect(String((failure as AgentRunError).cause)).toContain('HTTP 400')
   })
 
   it('keeps the Chat Completions shape when OSWORLD_OPENAI_API=chat', async () => {

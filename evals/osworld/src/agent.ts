@@ -54,6 +54,18 @@ export interface Prompt {
   turns: Array<{ image?: string, role: 'assistant' | 'user', text: string }>
 }
 
+/**
+ * A failure inside {@link runAgent} that keeps the steps taken before it, so
+ * an episode error (for example a model request rejected by moderation) can
+ * still be reviewed.
+ */
+export class AgentRunError extends Error {
+  constructor(readonly partial: AgentResult, cause: unknown) {
+    super(`Agent stopped after ${String(partial.steps.length)} steps`, { cause })
+    this.name = 'AgentRunError'
+  }
+}
+
 // NOTICE: One model attempt may not take longer than this. Without it, a
 // stalled proxy stream held a case until Vieval's case timeout (p50 6 s,
 // p99 314 s, max 832 s in the 2026-10-11 test_nogdrive run). A timed-out
@@ -235,52 +247,57 @@ export async function runAgent(
   const history: Prompt['turns'] = []
   let ignoredNote = ''
 
-  for (let step = 0; step < options.maxSteps; step += 1) {
-    const capture = await invoke('display.capture', [])
-    result.runIds.push(capture.run_id)
-    const image = capture.artifacts[0]?.file_path
-    if (image == null) {
-      throw new Error(`AUV capture ${capture.run_id} returned no image artifact.`)
-    }
+  try {
+    for (let step = 0; step < options.maxSteps; step += 1) {
+      const capture = await invoke('display.capture', [])
+      result.runIds.push(capture.run_id)
+      const image = capture.artifacts[0]?.file_path
+      if (image == null) {
+        throw new Error(`AUV capture ${capture.run_id} returned no image artifact.`)
+      }
 
-    const reply = await complete(endpoint, {
-      instructions: systemPrompt,
-      turns: [
-        { role: 'user', text: `Task: ${instruction}` },
-        // Only the latest screenshot is sent; earlier turns keep their text.
-        ...history,
-        {
-          image: `data:image/webp;base64,${(await readFile(image)).toString('base64')}`,
-          role: 'user',
-          text: `${ignoredNote}Step ${step + 1} of ${options.maxSteps}. Current screenshot:`,
-        },
-      ],
-    }, options.signal)
-    // History holds only what was executed. With the full reply, the model
-    // assumed its extra concatenated actions had run and planned from a state
-    // that never existed (8 of 10 early zero scores in test_nogdrive).
-    const { action, text, truncated } = parseDecision(reply)
-    history.push({ role: 'assistant', text })
-    ignoredNote = truncated
-      ? 'Only the first action of your previous reply was executed; the others were ignored. Reply with exactly one action. '
-      : ''
-    if (action.type === 'done' || action.type === 'fail') {
-      result.steps.push({ action, reply })
-      result.lastAction = action.type === 'done' ? 'DONE' : 'FAIL'
-      return result
+      const reply = await complete(endpoint, {
+        instructions: systemPrompt,
+        turns: [
+          { role: 'user', text: `Task: ${instruction}` },
+          // Only the latest screenshot is sent; earlier turns keep their text.
+          ...history,
+          {
+            image: `data:image/webp;base64,${(await readFile(image)).toString('base64')}`,
+            role: 'user',
+            text: `${ignoredNote}Step ${step + 1} of ${options.maxSteps}. Current screenshot:`,
+          },
+        ],
+      }, options.signal)
+      // History holds only what was executed. With the full reply, the model
+      // assumed its extra concatenated actions had run and planned from a state
+      // that never existed (8 of 10 early zero scores in test_nogdrive).
+      const { action, text, truncated } = parseDecision(reply)
+      history.push({ role: 'assistant', text })
+      ignoredNote = truncated
+        ? 'Only the first action of your previous reply was executed; the others were ignored. Reply with exactly one action. '
+        : ''
+      if (action.type === 'done' || action.type === 'fail') {
+        result.steps.push({ action, reply })
+        result.lastAction = action.type === 'done' ? 'DONE' : 'FAIL'
+        return result
+      }
+      const invocation = toInvocation(action)
+      if (invocation == null) {
+        result.steps.push({ action, reply })
+        await new Promise(resolve => setTimeout(resolve, 2_000))
+        continue
+      }
+      const delivered = await invoke(invocation[0], invocation[1])
+      result.runIds.push(delivered.run_id)
+      result.steps.push({ action, reply, runId: delivered.run_id })
+      // NOTICE: UI effects are asynchronous and AUV input delivery does not wait
+      // for repaint. One second matches OSWorld's default inter-step pause order.
+      await new Promise(resolve => setTimeout(resolve, 1_000))
     }
-    const invocation = toInvocation(action)
-    if (invocation == null) {
-      result.steps.push({ action, reply })
-      await new Promise(resolve => setTimeout(resolve, 2_000))
-      continue
-    }
-    const delivered = await invoke(invocation[0], invocation[1])
-    result.runIds.push(delivered.run_id)
-    result.steps.push({ action, reply, runId: delivered.run_id })
-    // NOTICE: UI effects are asynchronous and AUV input delivery does not wait
-    // for repaint. One second matches OSWorld's default inter-step pause order.
-    await new Promise(resolve => setTimeout(resolve, 1_000))
+  }
+  catch (error) {
+    throw new AgentRunError(result, error)
   }
   return result
 }
