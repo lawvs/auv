@@ -7,6 +7,10 @@ import { modelApiFrom } from '../src/agent'
 import { loadCases } from '../src/cases'
 import { runEpisode } from '../src/episode'
 
+// Wall-clock budget for one episode: Pod boot, setup, every agent step, and
+// evaluation. Raise it together with OSWORLD_MAX_STEPS.
+const caseTimeoutMs = Number(process.env.OSWORLD_CASE_TIMEOUT_MINUTES ?? 60) * 60 * 1000
+
 // NOTICE: One Vieval task holds every case because Vieval applies its case
 // concurrency cap within a task and runs separate task definitions in this
 // module one after another. The OSWorld domain is the case-name prefix.
@@ -32,7 +36,7 @@ describeTask('osworld', () => {
       context.metric('auv.linux_binary.sha256', result.auvLinuxSha256)
       context.score(result.score, 'exact')
       expect(result.score).toBe(1)
-    }, { input: item, timeout: 30 * 60 * 1000 })
+    }, { input: item, timeout: caseTimeoutMs })
   }
 }, {
   description: 'OSWorld tasks in disposable KVM Pods, driven through AUV and scored by the upstream evaluator.',
