@@ -111,14 +111,14 @@ async function main(): Promise<void> {
     // wire API, request shape, and reply parsing that an episode uses.
     const endpoint: ModelEndpoint = { api, apiKey, baseURL, model }
     const probes: Array<[string, Prompt]> = [
-      ['text', { turns: [{ role: 'user', text: 'Reply with OK.' }] }],
-      ['image', { turns: [{ image: `data:image/png;base64,${pixel}`, role: 'user', text: 'Reply with OK if you can see an image.' }] }],
+      ['text', { items: [{ role: 'user', text: 'Reply with OK.', type: 'message' }] }],
+      ['image', { items: [{ image: `data:image/png;base64,${pixel}`, role: 'user', text: 'Reply with OK if you can see an image.', type: 'message' }] }],
     ]
     for (const [kind, prompt] of probes) {
       const request = requestFor(endpoint, prompt)
       const started = Date.now()
       const reply = await complete(endpoint, prompt, AbortSignal.timeout(120_000))
-        .then(text => ({ text }), (error: unknown) => ({ error: errorMessageFrom(error) ?? String(error) }))
+        .then(({ text }) => ({ text }), (error: unknown) => ({ error: errorMessageFrom(error) ?? String(error) }))
       add({
         detail: 'text' in reply ? `${Date.now() - started}ms reply=${JSON.stringify(reply.text)}` : reply.error.slice(0, 300),
         name: `model reply ${kind} (${api}, ${model})`,

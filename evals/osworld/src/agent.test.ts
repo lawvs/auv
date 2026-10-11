@@ -1,27 +1,12 @@
-import type { Invoke, ModelEndpoint } from './agent'
-
-import { Buffer } from 'node:buffer'
-import { mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import type { AgentTools, FunctionCall, ModelEndpoint } from './agent'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { AgentRunError, complete, modelApiFrom, parseDecision, runAgent, toInvocation } from './agent'
+import { AgentRunError, complete, modelApiFrom, requestFor, runAgent } from './agent'
 
-/** AUV stub: `display.capture` returns a real file, input commands succeed. */
-async function stubInvoke(): Promise<{ commands: string[], invoke: Invoke }> {
-  const image = join(await mkdtemp(join(tmpdir(), 'osworld-agent-')), 'capture.webp')
-  await writeFile(image, 'webp-bytes')
-  const commands: string[] = []
-  return {
-    commands,
-    invoke: async (command) => {
-      commands.push(command)
-      return { artifacts: command === 'display.capture' ? [{ file_path: image }] : [], run_id: `run-${commands.length}` }
-    },
-  }
-}
+const endpoint = (api: ModelEndpoint['api']): ModelEndpoint => ({ api, apiKey: 'k', baseURL: 'http://proxy.test/v1/', model: 'm' })
+
+const invokeTool = { description: 'Invoke one AUV command.', name: 'invoke', parameters: { properties: { command_id: { type: 'string' } }, type: 'object' } }
 
 /** Captures every model request and answers from `replies` in order. */
 function stubModel(replies: unknown[]): Array<{ body: Record<string, any>, url: string }> {
@@ -33,69 +18,94 @@ function stubModel(replies: unknown[]): Array<{ body: Record<string, any>, url: 
   return requests
 }
 
-const endpoint = (api: ModelEndpoint['api']): ModelEndpoint => ({ api, apiKey: 'k', baseURL: 'http://proxy.test/v1/', model: 'm' })
+/** Tool stub: every call returns text plus one image, and is recorded. */
+function stubTools(): { calls: FunctionCall[], tools: AgentTools } {
+  const calls: FunctionCall[] = []
+  return {
+    calls,
+    tools: {
+      call: async (call) => {
+        calls.push(call)
+        return { images: [`data:image/webp;base64,shot-${calls.length}`], runId: `run-${calls.length}`, text: `{"status":"completed","n":${calls.length}}` }
+      },
+      definitions: [invokeTool],
+    },
+  }
+}
+
+const call = (callId: string, name: string, args: unknown = {}) => ({ arguments: JSON.stringify(args), call_id: callId, name, type: 'function_call' })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
-describe('runAgent model API', () => {
-  it('sends Responses requests and carries earlier replies as assistant output_text', async () => {
-    const typeReply = '{"action":{"type":"type","text":"hi"}}'
+describe('runAgent with Responses tools', () => {
+  it('executes the chosen AUV call and returns its output with the image', async () => {
     const requests = stubModel([
-      // Reasoning items precede the message; only output_text is the reply.
-      { output: [{ type: 'reasoning' }, { content: [{ text: typeReply, type: 'output_text' }], type: 'message' }] },
-      { output: [{ content: [{ text: '{"action":{"type":"done"}}', type: 'output_text' }], type: 'message' }] },
+      // Reasoning items precede the call; only function_call items are actions.
+      { output: [{ type: 'reasoning' }, call('c1', 'invoke', { command_id: 'display.capture' })] },
+      { output: [call('c2', 'done')] },
     ])
-    const { commands, invoke } = await stubInvoke()
+    const { calls, tools } = stubTools()
 
-    const result = await runAgent('do it', endpoint('responses'), invoke, { maxSteps: 3, signal: AbortSignal.timeout(10_000) })
+    const result = await runAgent('do it', endpoint('responses'), tools, { maxSteps: 3, signal: AbortSignal.timeout(10_000) })
 
     expect(result.lastAction).toBe('DONE')
-    expect(commands).toEqual(['display.capture', 'input.typeText', 'display.capture'])
-    expect(requests.map(request => request.url)).toEqual(['http://proxy.test/v1/responses', 'http://proxy.test/v1/responses'])
-    const second = requests[1].body
-    // ROOT CAUSE:
-    //
-    // If tool choice was left open, the Codex backend ran image_generation
-    // between answers, several rounds per request (44ee5668 step 1 replayed:
-    // 29-173 s; with tool_choice none: 4 s, one message).
-    expect(second).toMatchObject({ model: 'm', store: false, tool_choice: 'none' })
-    expect(second.instructions).toContain('Ubuntu GNOME desktop')
-    expect(second.input).toEqual([
-      { content: [{ text: 'Task: do it', type: 'input_text' }], role: 'user' },
-      { content: [{ text: typeReply, type: 'output_text' }], role: 'assistant' },
+    expect(result.runIds).toEqual(['run-1'])
+    expect(calls.map(item => item.arguments)).toEqual(['{"command_id":"display.capture"}'])
+    const first = requests[0].body
+    expect(first).toMatchObject({ model: 'm', parallel_tool_calls: false, store: false, tool_choice: 'auto' })
+    expect(first.tools.map((tool: { name: string }) => tool.name)).toEqual(['invoke', 'done', 'fail'])
+    expect(requests[1].body.input.slice(1)).toEqual([
+      { arguments: '{"command_id":"display.capture"}', call_id: 'c1', name: 'invoke', type: 'function_call' },
       {
-        content: [
-          { text: 'Step 2 of 3. Current screenshot:', type: 'input_text' },
-          { image_url: `data:image/webp;base64,${Buffer.from('webp-bytes').toString('base64')}`, type: 'input_image' },
+        call_id: 'c1',
+        output: [
+          { text: '{"status":"completed","n":1}', type: 'input_text' },
+          { image_url: 'data:image/webp;base64,shot-1', type: 'input_image' },
         ],
-        role: 'user',
+        type: 'function_call_output',
       },
     ])
   })
 
-  // ROOT CAUSE:
-  //
-  // If the model concatenated several actions, only the first ran, but the
-  // whole reply went into history. The model then planned from a state that
-  // never existed and ran out of steps.
-  //
-  // The fix keeps only the executed object and says the rest were ignored.
-  it('records only the executed action when a reply holds several', async () => {
-    const first = '{"thought":"open","action":{"type":"keys","keys":["ctrl","l"]}}'
+  it('ends with FAIL when the model calls fail', async () => {
+    stubModel([{ output: [call('c1', 'fail')] }])
+    const { calls, tools } = stubTools()
+
+    const result = await runAgent('impossible', endpoint('responses'), tools, { maxSteps: 3, signal: AbortSignal.timeout(10_000) })
+
+    expect(result.lastAction).toBe('FAIL')
+    expect(calls).toEqual([])
+  })
+
+  it('keeps only the latest screenshot in history', async () => {
     const requests = stubModel([
-      { output: [{ content: [{ text: `${first}{"action":{"type":"type","text":"x"}}`, type: 'output_text' }], type: 'message' }] },
-      { output: [{ content: [{ text: '{"action":{"type":"done"}}', type: 'output_text' }], type: 'message' }] },
+      { output: [call('c1', 'invoke')] },
+      { output: [call('c2', 'invoke')] },
+      { output: [call('c3', 'done')] },
     ])
-    const { commands, invoke } = await stubInvoke()
+    const { tools } = stubTools()
 
-    await runAgent('do it', endpoint('responses'), invoke, { maxSteps: 3, signal: AbortSignal.timeout(10_000) })
+    await runAgent('do it', endpoint('responses'), tools, { maxSteps: 5, signal: AbortSignal.timeout(10_000) })
 
-    expect(commands).toEqual(['display.capture', 'input.keys', 'display.capture'])
-    const input = requests[1].body.input
-    expect(input[1]).toEqual({ content: [{ text: first, type: 'output_text' }], role: 'assistant' })
-    expect(input[2].content[0].text).toBe('Only the first action of your previous reply was executed; the others were ignored. Reply with exactly one action. Step 2 of 3. Current screenshot:')
+    const outputs = requests[2].body.input.filter((item: { type?: string }) => item.type === 'function_call_output')
+    expect(outputs[0].output).toBe('{"status":"completed","n":1}\n[Earlier screenshot omitted.]')
+    expect(outputs[1].output[1]).toEqual({ image_url: 'data:image/webp;base64,shot-2', type: 'input_image' })
+  })
+
+  it('asks for a tool call when the model only answers in text', async () => {
+    const requests = stubModel([
+      { output: [{ content: [{ text: 'I will look first.', type: 'output_text' }], type: 'message' }] },
+      { output: [call('c1', 'done')] },
+    ])
+    const { tools } = stubTools()
+
+    const result = await runAgent('do it', endpoint('responses'), tools, { maxSteps: 3, signal: AbortSignal.timeout(10_000) })
+
+    expect(result.steps[0]).toEqual({ message: 'I will look first.' })
+    expect(requests[1].body.input.at(-1)).toEqual({ content: [{ text: 'Call a tool to act on the computer, or call done or fail.', type: 'input_text' }], role: 'user' })
   })
 
   // ROOT CAUSE:
@@ -110,30 +120,53 @@ describe('runAgent model API', () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       calls += 1
       return calls === 1
-        ? Response.json({ output: [{ content: [{ text: '{"action":{"type":"type","text":"hi"}}', type: 'output_text' }], type: 'message' }] })
+        ? Response.json({ output: [call('c1', 'invoke')] })
         : Response.json({ error: { code: 'invalid_prompt' } }, { status: 400 })
     }))
-    const { invoke } = await stubInvoke()
+    const { tools } = stubTools()
 
-    const failure = await runAgent('do it', endpoint('responses'), invoke, { maxSteps: 3, signal: AbortSignal.timeout(10_000) }).catch((error: unknown) => error)
+    const failure = await runAgent('do it', endpoint('responses'), tools, { maxSteps: 3, signal: AbortSignal.timeout(10_000) }).catch((error: unknown) => error)
 
     expect(failure).toBeInstanceOf(AgentRunError)
     expect((failure as AgentRunError).message).toBe('Agent stopped after 1 steps')
-    expect((failure as AgentRunError).partial.steps.map(step => step.action.type)).toEqual(['type'])
+    expect((failure as AgentRunError).partial.steps.map(step => step.tool)).toEqual(['invoke'])
     expect(String((failure as AgentRunError).cause)).toContain('HTTP 400')
   })
+})
 
-  it('keeps the Chat Completions shape when OSWORLD_OPENAI_API=chat', async () => {
-    const requests = stubModel([{ choices: [{ message: { content: '{"action":{"type":"fail"}}' } }] }])
-    const { invoke } = await stubInvoke()
+describe('requestFor', () => {
+  // ROOT CAUSE:
+  //
+  // If a request declared no tools and left tool choice open, the Codex
+  // backend ran its injected image_generation tool between answers, several
+  // rounds per request (44ee5668 step 1 replayed: 29-173 s; with tool_choice
+  // none: 4 s, one message).
+  it('disables tools for a text-only Responses request', () => {
+    const request = requestFor(endpoint('responses'), { items: [{ role: 'user', text: 'Reply with OK.', type: 'message' }] })
+    expect(JSON.parse(request.body)).toMatchObject({ store: false, tool_choice: 'none' })
+  })
 
-    const result = await runAgent('do it', endpoint('chat'), invoke, { maxSteps: 1, signal: AbortSignal.timeout(10_000) })
+  it('maps tool calls onto Chat Completions, with images in a following user turn', () => {
+    const request = requestFor(endpoint('chat'), {
+      instructions: 'system',
+      items: [
+        { role: 'user', text: 'Task: do it', type: 'message' },
+        { arguments: '{}', callId: 'c1', name: 'invoke', type: 'function_call' },
+        { callId: 'c1', images: ['data:image/webp;base64,x'], text: 'ok', type: 'function_call_output' },
+      ],
+      tools: [invokeTool],
+    })
 
-    expect(result.lastAction).toBe('FAIL')
-    expect(requests[0].url).toBe('http://proxy.test/v1/chat/completions')
-    const messages = requests[0].body.messages
-    expect(messages[0].role).toBe('system')
-    expect(messages.at(-1).content[1]).toEqual({ image_url: { url: `data:image/webp;base64,${Buffer.from('webp-bytes').toString('base64')}` }, type: 'image_url' })
+    expect(request.url).toBe('http://proxy.test/v1/chat/completions')
+    const body = JSON.parse(request.body)
+    expect(body.tools).toEqual([{ function: invokeTool, type: 'function' }])
+    expect(body.messages).toEqual([
+      { content: 'system', role: 'system' },
+      { content: 'Task: do it', role: 'user' },
+      { content: null, role: 'assistant', tool_calls: [{ function: { arguments: '{}', name: 'invoke' }, id: 'c1', type: 'function' }] },
+      { content: 'ok', role: 'tool', tool_call_id: 'c1' },
+      { content: [{ text: 'Images from c1:', type: 'text' }, { image_url: { url: 'data:image/webp;base64,x' }, type: 'image_url' }], role: 'user' },
+    ])
   })
 })
 
@@ -155,11 +188,16 @@ describe('complete', () => {
         ? Response.json({ error: { message: 'stream closed before response.completed' } }, { status: 408 })
         : Response.json({ output: [{ content: [{ text: 'ok', type: 'output_text' }], type: 'message' }] })
     }))
-    const reply = complete(endpoint('responses'), { turns: [{ role: 'user', text: 'hi' }] }, new AbortController().signal)
+    const reply = complete(endpoint('responses'), { items: [{ role: 'user', text: 'hi', type: 'message' }] }, new AbortController().signal)
     await vi.runAllTimersAsync()
-    await expect(reply).resolves.toBe('ok')
+    await expect(reply).resolves.toEqual({ calls: [], text: 'ok' })
     expect(calls).toBe(2)
-    vi.useRealTimers()
+  })
+
+  it('reads Chat Completions tool calls', async () => {
+    stubModel([{ choices: [{ message: { content: null, tool_calls: [{ function: { arguments: '{"a":1}', name: 'invoke' }, id: 'c9' }] } }] }])
+    const reply = await complete(endpoint('chat'), { items: [], tools: [invokeTool] }, AbortSignal.timeout(10_000))
+    expect(reply).toEqual({ calls: [{ arguments: '{"a":1}', callId: 'c9', name: 'invoke' }], text: '' })
   })
 })
 
@@ -172,33 +210,5 @@ describe('modelApiFrom', () => {
 
   it('rejects an unknown API instead of silently falling back', () => {
     expect(() => modelApiFrom('completions')).toThrow(/responses" or "chat/)
-  })
-})
-
-describe('parseDecision', () => {
-  // ROOT CAUSE:
-  //
-  // If the model appended planned turns as concatenated JSON objects, the
-  // reply failed to parse and the step became `wait`.
-  //
-  // Before the fix, the parser sliced from the first `{` to the last `}`.
-  // The fix keeps only the first balanced object as the current decision.
-  it('uses the first object when the model concatenates several turns', () => {
-    const reply = '{"thought":"a {brace}","action":{"type":"keys","keys":["F2"]}}{"action":{"type":"wait"}}'
-    expect(parseDecision(reply)).toEqual({
-      action: { keys: ['F2'], type: 'keys' },
-      text: '{"thought":"a {brace}","action":{"type":"keys","keys":["F2"]}}',
-      truncated: true,
-    })
-  })
-
-  it('treats a reply without an action as wait', () => {
-    expect(parseDecision('I cannot see the screen.')).toEqual({ action: { type: 'wait' }, text: 'I cannot see the screen.', truncated: false })
-  })
-})
-
-describe('toInvocation', () => {
-  it('places positionals after -- so typed text cannot become a flag', () => {
-    expect(toInvocation({ text: '-rf', type: 'type' })).toEqual(['input.typeText', ['--', '-rf']])
   })
 })
