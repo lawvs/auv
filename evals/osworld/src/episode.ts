@@ -10,7 +10,7 @@ import { join, resolve } from 'node:path'
 
 import { errorCauseFrom, errorMessageFrom, errorStackFrom } from '@moeru/std'
 
-import { runAgent } from './agent'
+import { AgentRunError, runAgent } from './agent'
 import { packageDirectory } from './cases'
 import { observeGuestCommand, recordKubernetesResource, runLoggedCommand, startLoggedCommand } from './executionLog'
 import { installRuntimeLibraries } from './guestSetup'
@@ -157,6 +157,7 @@ export async function runEpisode(
     return { agent, auvLinuxSha256, evidenceDirectory, podName, score }
   }
   catch (error) {
+    agent ??= error instanceof AgentRunError ? error.partial : undefined
     await writeResult(evidenceDirectory, { ...record, agent, error: describeError(error), errorStack: errorStackFrom(error), status: 'error' })
     throw error
   }
