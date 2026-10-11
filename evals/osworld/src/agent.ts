@@ -1,3 +1,5 @@
+import { sleepWithAbort } from '@moeru/std'
+
 export interface AgentResult {
   /** `DONE` or `FAIL` when the model ended the episode, as OSWorld expects. */
   lastAction?: 'DONE' | 'FAIL'
@@ -128,12 +130,22 @@ Act with one tool call per reply. Call done when the task is complete, or fail i
 The user password is "password".`
 
 /**
+ * Waits between attempts while the proxy has no capacity (429, 503).
+ *
+ * NOTICE: cliproxyapi answers 503 `auth_unavailable` while every Codex
+ * account cools down, which lasted minutes in the 2026-10-12 run. The
+ * schedule waits up to about ten minutes before the episode fails.
+ */
+const capacityBackoffMs = [15_000, 30_000, 60_000, 120_000, 120_000, 120_000, 120_000]
+
+/**
  * Requests one model reply, retrying transient proxy failures.
  *
- * Network errors, attempts over three minutes, 408, 429, and 5xx are retried
- * at most three times with a short linear backoff; other HTTP errors fail the
- * case immediately. cliproxyapi answers 408 when its upstream stream closes
- * before `response.completed`.
+ * Network errors, attempts over three minutes, 408, and other 5xx are retried
+ * at most three times with a short linear backoff; cliproxyapi answers 408
+ * when its upstream stream closes before `response.completed`. 429 and 503
+ * mean no capacity and wait longer, honoring `Retry-After`. Other HTTP errors
+ * fail the case immediately.
  *
  * Use when:
  * - the agent loop needs the next decision
@@ -141,7 +153,9 @@ The user password is "password".`
  */
 export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: AbortSignal): Promise<Reply> {
   const request = requestFor(endpoint, prompt)
-  for (let attempt = 1; ; attempt += 1) {
+  let transientFailures = 0
+  let capacityWaits = 0
+  for (;;) {
     const outcome = await fetch(request.url, {
       body: request.body,
       headers: { 'authorization': `Bearer ${endpoint.apiKey}`, 'content-type': 'application/json' },
@@ -150,7 +164,7 @@ export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: 
     }).then(async response => response.ok
       ? { reply: replyFrom(endpoint.api, await response.json()) }
       : { response }).catch((error: unknown) => {
-      if (attempt >= 3 || signal.aborted) {
+      if (transientFailures + 1 >= 3 || signal.aborted) {
         throw error
       }
       return undefined
@@ -159,10 +173,16 @@ export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: 
       return outcome.reply
     }
     const response = outcome?.response
-    if (response != null && (!isTransientStatus(response.status) || attempt >= 3)) {
+    if (response != null && (response.status === 429 || response.status === 503) && capacityWaits < capacityBackoffMs.length) {
+      await sleepWithAbort(retryAfterMs(response) ?? capacityBackoffMs[capacityWaits], signal)
+      capacityWaits += 1
+      continue
+    }
+    transientFailures += 1
+    if (response != null && (!isTransientStatus(response.status) || transientFailures >= 3)) {
       throw new Error(`Model request to ${request.url} failed with HTTP ${response.status}: ${await response.text()}`)
     }
-    await new Promise(resolve => setTimeout(resolve, attempt * 5_000))
+    await sleepWithAbort(transientFailures * 5_000, signal)
   }
 }
 
@@ -362,6 +382,12 @@ function responsesItem(item: ConversationItem): unknown {
       }
       return { content: [{ text: item.text, type: 'input_text' }, ...(item.image == null ? [] : [{ image_url: item.image, type: 'input_image' }])], role: 'user' }
   }
+}
+
+/** Reads a `Retry-After` header in seconds, bounded to five minutes. */
+function retryAfterMs(response: Response): number | undefined {
+  const seconds = Number(response.headers.get('retry-after'))
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 300) * 1_000 : undefined
 }
 
 /** Keeps images only on the latest {@link imagesInHistory} tool outputs. */

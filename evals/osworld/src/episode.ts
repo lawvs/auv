@@ -8,7 +8,7 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
 
-import { errorCauseFrom, errorMessageFrom, errorStackFrom } from '@moeru/std'
+import { errorCauseFrom, errorMessageFrom, errorStackFrom, sleepWithAbort } from '@moeru/std'
 
 import { AgentRunError, runAgent } from './agent'
 import { startAuvTools } from './auvTools'
@@ -276,7 +276,7 @@ async function connectSetup(
     })
 
     for (let probe = 0; probe < 4; probe += 1) {
-      await delay(1_000, signal)
+      await sleepWithAbort(1_000, signal)
       if (ended) {
         break
       }
@@ -289,16 +289,6 @@ async function connectSetup(
     await completion
   }
   throw new Error('OSWorld setup API did not become ready within eight minutes.')
-}
-
-async function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
-  await new Promise<void>((resolveDelay, reject) => {
-    const timeout = setTimeout(resolveDelay, milliseconds)
-    signal.addEventListener('abort', () => {
-      clearTimeout(timeout)
-      reject(signal.reason)
-    }, { once: true })
-  })
 }
 
 async function execute(endpoint: string, body: { command: string | string[], shell?: boolean }, signal: AbortSignal): Promise<ExecuteResponse> {
@@ -372,7 +362,7 @@ async function installAuv(
     if (probe.returncode === 0) {
       return
     }
-    await delay(1_000, signal)
+    await sleepWithAbort(1_000, signal)
   }
   throw new Error('Guest-local AUV daemon did not create its Unix socket within 60 seconds.')
 }
@@ -508,7 +498,7 @@ async function uploadGuestFile(endpoint: string, file: GuestFile, signal: AbortS
       if (attempt >= 3 || signal.aborted) {
         throw error
       }
-      await delay(3_000, signal)
+      await sleepWithAbort(3_000, signal)
       return undefined
     })
   }

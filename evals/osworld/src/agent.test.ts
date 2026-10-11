@@ -194,6 +194,54 @@ describe('complete', () => {
     expect(calls).toBe(2)
   })
 
+  // ROOT CAUSE:
+  //
+  // If every Codex account behind cliproxyapi cooled down, the proxy answered
+  // 503 `auth_unavailable` for minutes. Three attempts 15 s apart gave up, so
+  // 14 of 22 episodes in the 2026-10-12 run errored mid-trajectory.
+  //
+  // The fix waits out 429/503 with a longer, bounded backoff.
+  it('waits out a proxy with no available account', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      return calls <= 5
+        ? Response.json({ error: { message: 'auth_unavailable: no auth available (providers=codex, model=gpt-5.5)' } }, { status: 503 })
+        : Response.json({ output: [{ content: [{ text: 'ok', type: 'output_text' }], type: 'message' }] })
+    }))
+    const reply = complete(endpoint('responses'), { items: [] }, new AbortController().signal)
+    await vi.runAllTimersAsync()
+    await expect(reply).resolves.toEqual({ calls: [], text: 'ok' })
+    expect(calls).toBe(6)
+  })
+
+  it('honors Retry-After from a rate-limited proxy', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      return calls === 1
+        ? new Response('slow down', { headers: { 'retry-after': '90' }, status: 429 })
+        : Response.json({ output: [] })
+    }))
+    const reply = complete(endpoint('responses'), { items: [] }, new AbortController().signal)
+    await vi.advanceTimersByTimeAsync(89_000)
+    expect(calls).toBe(1)
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(reply).resolves.toEqual({ calls: [], text: '' })
+  })
+
+  it('still fails fast on a request the proxy rejects', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      return Response.json({ error: { code: 'invalid_prompt' } }, { status: 400 })
+    }))
+    await expect(complete(endpoint('responses'), { items: [] }, new AbortController().signal)).rejects.toThrow('HTTP 400')
+    expect(calls).toBe(1)
+  })
+
   it('reads Chat Completions tool calls', async () => {
     stubModel([{ choices: [{ message: { content: null, tool_calls: [{ function: { arguments: '{"a":1}', name: 'invoke' }, id: 'c9' }] } }] }])
     const reply = await complete(endpoint('chat'), { items: [], tools: [invokeTool] }, AbortSignal.timeout(10_000))
