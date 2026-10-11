@@ -211,8 +211,13 @@ export function requestFor(endpoint: ModelEndpoint, prompt: Prompt): { body: str
   // NOTICE: `store: false` keeps every step a self-contained request (history
   // is resent, no `previous_response_id`), so a step can be replayed from the
   // episode evidence alone and no conversation state lives at the provider.
+
+  // NOTICE: `tool_choice: 'none'` stops the Codex backend behind cliproxyapi
+  // from running its injected image_generation tool between answers.
+  // TODO(osworld-chat-tool-choice): add it to the chat wire API when a chat
+  // endpoint is shown to inject tools.
   return {
-    body: JSON.stringify({ input, instructions: prompt.instructions, model: endpoint.model, store: false }),
+    body: JSON.stringify({ input, instructions: prompt.instructions, model: endpoint.model, store: false, tool_choice: 'none' }),
     url: `${baseURL}/responses`,
   }
 }
