@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path'
 import { errorCauseFrom, errorMessageFrom, errorStackFrom } from '@moeru/std'
 
 import { AgentRunError, runAgent } from './agent'
+import { startAuvTools } from './auvTools'
 import { packageDirectory } from './cases'
 import { observeGuestCommand, recordKubernetesResource, runLoggedCommand, startLoggedCommand } from './executionLog'
 import { installRuntimeLibraries } from './guestSetup'
@@ -33,11 +34,6 @@ interface ExecuteResponse {
   output: string
   returncode: number
   status: string
-}
-
-interface InvokeResponse {
-  artifacts: Array<{ file_path: string, sha256: string }>
-  run_id: string
 }
 
 /** Guest ports reached through one `kubectl port-forward`. */
@@ -124,6 +120,7 @@ export async function runEpisode(
   let portForward: ReturnType<typeof startLoggedCommand> | undefined
   // Kept outside `try` so an evaluator failure still records what the agent did.
   let agent: AgentResult | undefined
+  let auvTools: Awaited<ReturnType<typeof startAuvTools>> | undefined
   const profilesFile = join(evidenceDirectory, 'device-profiles.json')
 
   try {
@@ -139,14 +136,20 @@ export async function runEpisode(
 
     await installAuv(setupEndpoint, binaryBytes, auvLinuxSha256, log, signal)
     const deviceId = await pairAuv(setupEndpoint, macosAuvBinary, ports.auv, profilesFile, log, signal)
-    const storeRoot = join(evidenceDirectory, 'auv-runs')
-    const invoke = async (command: string, args: string[]) => await invokeAuv(macosAuvBinary, deviceId, profilesFile, storeRoot, command, args, log, signal)
+    auvTools = await startAuvTools({
+      context: log,
+      deviceId,
+      env: { ...process.env, AUV_CONFIG_PROFILES_FILE: profilesFile },
+      executable: macosAuvBinary,
+      stderrFile: join(evidenceDirectory, 'auv-mcp.stderr.log'),
+      storeRoot: join(evidenceDirectory, 'auv-runs'),
+    }, signal)
 
     const setup = await bridge('setup', item, ports, evidenceDirectory, undefined, log, signal)
     if (setup.ok !== true) {
       throw new Error(`OSWorld setup failed for ${caseId}.`)
     }
-    agent = await runAgent(item.task.instruction, endpoint, invoke, {
+    agent = await runAgent(item.task.instruction, endpoint, auvTools, {
       maxSteps: Number(process.env.OSWORLD_MAX_STEPS ?? 15),
       signal,
     })
@@ -162,6 +165,7 @@ export async function runEpisode(
     throw error
   }
   finally {
+    auvTools?.close()
     portForward?.process.kill('SIGTERM')
     await unlink(profilesFile).catch(() => undefined)
     await unlink(`${profilesFile}.lock`).catch(() => undefined)
@@ -363,31 +367,6 @@ async function installAuv(
     await delay(1_000, signal)
   }
   throw new Error('Guest-local AUV daemon did not create its Unix socket within 60 seconds.')
-}
-
-async function invokeAuv(
-  binary: string,
-  deviceId: string,
-  profilesFile: string,
-  storeRoot: string,
-  command: string,
-  args: string[],
-  log: { caseId: string, podName: string },
-  signal: AbortSignal,
-): Promise<InvokeResponse> {
-  const result = await runLoggedCommand(binary, ['--device-id', deviceId, 'invoke', command, '--store-root', storeRoot, '--no-overlay', '--json', ...args], {
-    nodeOptions: { env: { ...process.env, AUV_CONFIG_PROFILES_FILE: profilesFile } },
-    signal,
-    timeout: 120_000,
-  }, { ...log, runtime: 'host', tool: 'auv' })
-  if (result.exitCode !== 0) {
-    throw new Error(`AUV command ${command} failed (${String(result.exitCode)}): ${result.stderr || result.stdout}`)
-  }
-  const parsed = JSON.parse(result.stdout) as Partial<InvokeResponse> & { status?: string }
-  if (typeof parsed.run_id !== 'string' || parsed.status !== 'completed') {
-    throw new Error(`AUV command ${command} returned an unexpected JSON result: ${result.stdout}`)
-  }
-  return { artifacts: parsed.artifacts ?? [], run_id: parsed.run_id }
 }
 
 /** Pairs the host AUV client with the guest daemon and returns the device id. */

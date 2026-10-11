@@ -1,35 +1,51 @@
-import { readFile } from 'node:fs/promises'
-
-/** One model decision; coordinates use a 0..1000 grid over the screenshot. */
-export type AgentAction
-  = | { button?: 'left' | 'middle' | 'right', count?: number, type: 'click', x: number, y: number }
-    | { dy: number, type: 'scroll', x: number, y: number }
-    | { keys: string[], type: 'keys' }
-    | { text: string, type: 'type' }
-    | { type: 'done' }
-    | { type: 'drag', x1: number, x2: number, y1: number, y2: number }
-    | { type: 'fail' }
-    | { type: 'wait' }
-
 export interface AgentResult {
   /** `DONE` or `FAIL` when the model ended the episode, as OSWorld expects. */
   lastAction?: 'DONE' | 'FAIL'
   runIds: string[]
-  /** Each model decision with its raw reply, kept as debugging evidence. */
-  steps: Array<{ action: AgentAction, reply: string, runId?: string }>
+  /** One entry per model reply, kept as debugging evidence. */
+  steps: AgentStep[]
 }
 
-/** The executed part of one model reply. */
-export interface Decision {
-  action: AgentAction
-  /** The first JSON object of the reply, or the whole reply when none parsed. */
-  text: string
-  /** The reply held more actions after the first; they were not executed. */
-  truncated: boolean
+export interface AgentStep {
+  arguments?: string
+  /** Assistant text that came with the call, if any. */
+  message?: string
+  /** Tool output text shown to the model, truncated for the result file. */
+  output?: string
+  runId?: string
+  tool?: string
 }
 
-/** Executes one AUV invoke command and returns its parsed JSON result. */
-export type Invoke = (command: string, args: string[]) => Promise<{ artifacts: Array<{ file_path: string }>, run_id: string }>
+/** The tools an episode exposes, and how to execute them. */
+export interface AgentTools {
+  call: (call: FunctionCall, signal: AbortSignal) => Promise<ToolOutput>
+  definitions: FunctionTool[]
+}
+
+/**
+ * One conversation item, independent of the wire protocol. The shape follows
+ * the Responses API; {@link requestFor} maps it onto Chat Completions.
+ */
+export type ConversationItem
+  = | (FunctionCall & { type: 'function_call' })
+    | { callId: string, images: string[], text: string, type: 'function_call_output' }
+    | { image?: string, role: 'user', text: string, type: 'message' }
+    | { role: 'assistant', text: string, type: 'message' }
+
+/** One function call chosen by the model. */
+export interface FunctionCall {
+  /** Raw JSON arguments, exactly as the model produced them. */
+  arguments: string
+  callId: string
+  name: string
+}
+
+/** One function the model may call, in the shape both wire APIs accept. */
+export interface FunctionTool {
+  description?: string
+  name: string
+  parameters: Record<string, unknown>
+}
 
 /**
  * OpenAI-compatible wire protocol: `responses` (`POST /responses`, default) or
@@ -37,7 +53,7 @@ export type Invoke = (command: string, args: string[]) => Promise<{ artifacts: A
  */
 export type ModelApi = 'chat' | 'responses'
 
-/** OpenAI-compatible model endpoint used to choose the next AUV action. */
+/** OpenAI-compatible model endpoint used to choose the next AUV call. */
 export interface ModelEndpoint {
   api: ModelApi
   apiKey: string
@@ -45,13 +61,25 @@ export interface ModelEndpoint {
   model: string
 }
 
-/**
- * One model request independent of the wire protocol. The last user turn may
- * carry one screenshot as a data URL.
- */
+/** One model request. Without tools, the model can only answer in text. */
 export interface Prompt {
   instructions?: string
-  turns: Array<{ image?: string, role: 'assistant' | 'user', text: string }>
+  items: ConversationItem[]
+  tools?: FunctionTool[]
+}
+
+/** One model reply: its text and the function calls it chose. */
+export interface Reply {
+  calls: FunctionCall[]
+  text: string
+}
+
+/** What one tool call returns to the model: text plus optional images as data URLs. */
+export interface ToolOutput {
+  images: string[]
+  /** AUV Run that produced the output, when the call reached AUV. */
+  runId?: string
+  text: string
 }
 
 /**
@@ -72,35 +100,46 @@ export class AgentRunError extends Error {
 // attempt is retried like a network error.
 const modelAttemptTimeoutMs = 180_000
 
-const systemPrompt = `You operate an Ubuntu GNOME desktop to complete the user's task.
-Each turn you receive the current screenshot. Reply with exactly one JSON object and nothing else:
-{"thought": "<one short sentence>", "action": <action>}
-Actions (x and y are integers on a 0..1000 grid over the screenshot; 0,0 is top-left):
-{"type":"click","x":500,"y":500,"button":"left","count":1}
-{"type":"drag","x1":100,"y1":100,"x2":300,"y2":100}
-{"type":"type","text":"hello"}            types into the focused control
-{"type":"keys","keys":["ctrl","s"]}         one key combination, modifiers first
-{"type":"scroll","x":500,"y":500,"dy":300}  positive dy scrolls down, in pixels
-{"type":"wait"}
-{"type":"done"}  the task is complete
-{"type":"fail"}  the task is impossible
+/**
+ * Screenshots kept in the conversation. Older tool outputs keep their text.
+ * One lossless 1920x1080 WebP capture is about 1.5 MB, and every step resends
+ * the history, so the window stays at the latest image.
+ */
+const imagesInHistory = 1
+
+/** Episode-ending tools. They belong to the eval, not to AUV: OSWorld scores infeasible tasks by `FAIL`. */
+export const episodeTools: FunctionTool[] = [
+  {
+    description: 'Call when the task is complete. Ends the episode.',
+    name: 'done',
+    parameters: { additionalProperties: false, properties: {}, type: 'object' },
+  },
+  {
+    description: 'Call when the task cannot be completed on this computer. Ends the episode.',
+    name: 'fail',
+    parameters: { additionalProperties: false, properties: {}, type: 'object' },
+  },
+]
+
+const systemPrompt = `You operate an Ubuntu GNOME desktop through AUV tools to complete the user's task.
+Look at the screen before acting: screenshots that AUV captures are attached to the tool result.
+Screen coordinates are logical pixels; the display is 1920x1080 at scale 1.
+Act with one tool call per reply. Call done when the task is complete, or fail if it cannot be done.
 The user password is "password".`
 
 /**
  * Requests one model reply, retrying transient proxy failures.
  *
  * Network errors, attempts over three minutes, 408, 429, and 5xx are retried
- * at most three times with a short linear backoff; other HTTP errors fail the case immediately. cliproxyapi
- * answers 408 when its upstream stream closes before `response.completed`.
+ * at most three times with a short linear backoff; other HTTP errors fail the
+ * case immediately. cliproxyapi answers 408 when its upstream stream closes
+ * before `response.completed`.
  *
  * Use when:
  * - the agent loop needs the next decision
  * - `doctor` probes that the configured endpoint answers the same request shape
- *
- * Returns:
- * - the reply text, or an empty string when the model returned no text
  */
-export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: AbortSignal): Promise<string> {
+export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: AbortSignal): Promise<Reply> {
   const request = requestFor(endpoint, prompt)
   for (let attempt = 1; ; attempt += 1) {
     const outcome = await fetch(request.url, {
@@ -109,7 +148,7 @@ export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: 
       method: 'POST',
       signal: AbortSignal.any([signal, AbortSignal.timeout(modelAttemptTimeoutMs)]),
     }).then(async response => response.ok
-      ? { reply: replyText(endpoint.api, await response.json()) }
+      ? { reply: replyFrom(endpoint.api, await response.json()) }
       : { response }).catch((error: unknown) => {
       if (attempt >= 3 || signal.aborted) {
         throw error
@@ -139,166 +178,106 @@ export function modelApiFrom(value: string | undefined): ModelApi {
 }
 
 /**
- * Extracts the first complete JSON object from a reply; anything else becomes
- * `wait`. Models sometimes append several planned turns as concatenated
- * objects, so only the first balanced object is the current decision.
- */
-export function parseDecision(reply: string): Decision {
-  const fallback: Decision = { action: { type: 'wait' }, text: reply, truncated: false }
-  let depth = 0
-  let inString = false
-  const begin = reply.indexOf('{')
-  if (begin < 0) {
-    return fallback
-  }
-  for (let index = begin; index < reply.length; index += 1) {
-    const char = reply[index]
-    if (inString) {
-      if (char === '\\') {
-        index += 1
-      }
-      else if (char === '"') {
-        inString = false
-      }
-      continue
-    }
-    if (char === '"') {
-      inString = true
-    }
-    else if (char === '{') {
-      depth += 1
-    }
-    else if (char === '}' && --depth === 0) {
-      const text = reply.slice(begin, index + 1)
-      try {
-        const parsed = JSON.parse(text) as { action?: AgentAction }
-        return typeof parsed.action?.type === 'string'
-          ? { action: parsed.action, text, truncated: reply.includes('{', index + 1) }
-          : fallback
-      }
-      catch {
-        break
-      }
-    }
-  }
-  return fallback
-}
-
-/**
  * Renders a {@link Prompt} into one wire request. Exported so `doctor` can
  * print the exact body it sent as a reproduce command.
  */
 export function requestFor(endpoint: ModelEndpoint, prompt: Prompt): { body: string, url: string } {
   const baseURL = endpoint.baseURL.replace(/\/$/, '')
+  const tools = prompt.tools ?? []
   if (endpoint.api === 'chat') {
-    const messages = [
-      ...(prompt.instructions == null ? [] : [{ content: prompt.instructions, role: 'system' }]),
-      ...prompt.turns.map(turn => ({
-        content: turn.image == null
-          ? turn.text
-          : [{ text: turn.text, type: 'text' }, { image_url: { url: turn.image }, type: 'image_url' }],
-        role: turn.role,
-      })),
-    ]
-    return { body: JSON.stringify({ messages, model: endpoint.model }), url: `${baseURL}/chat/completions` }
+    const body = {
+      messages: chatMessages(prompt),
+      model: endpoint.model,
+      ...(tools.length === 0
+        ? {}
+        : {
+            parallel_tool_calls: false,
+            tools: tools.map(tool => ({ function: tool, type: 'function' })),
+          }),
+    }
+    return { body: JSON.stringify(body), url: `${baseURL}/chat/completions` }
   }
-  const input = prompt.turns.map(turn => ({
-    content: turn.role === 'assistant'
-      ? [{ text: turn.text, type: 'output_text' }]
-      : [{ text: turn.text, type: 'input_text' }, ...(turn.image == null ? [] : [{ image_url: turn.image, type: 'input_image' }])],
-    role: turn.role,
-  }))
   // NOTICE: `store: false` keeps every step a self-contained request (history
   // is resent, no `previous_response_id`), so a step can be replayed from the
   // episode evidence alone and no conversation state lives at the provider.
 
-  // NOTICE: `tool_choice: 'none'` stops the Codex backend behind cliproxyapi
-  // from running its injected image_generation tool between answers.
-  // TODO(osworld-chat-tool-choice): add it to the chat wire API when a chat
-  // endpoint is shown to inject tools.
-  return {
-    body: JSON.stringify({ input, instructions: prompt.instructions, model: endpoint.model, store: false, tool_choice: 'none' }),
-    url: `${baseURL}/responses`,
+  // NOTICE: The Codex backend behind cliproxyapi injects its image_generation
+  // tool. With our own functions declared, the model calls them and the turn
+  // ends; without any, `tool_choice: 'none'` keeps it from generating images.
+  const body = {
+    input: prompt.items.map(responsesItem),
+    instructions: prompt.instructions,
+    model: endpoint.model,
+    store: false,
+    ...(tools.length === 0
+      ? { tool_choice: 'none' }
+      : {
+          parallel_tool_calls: false,
+          tool_choice: 'auto',
+          tools: tools.map(tool => ({ type: 'function', ...tool })),
+        }),
   }
+  return { body: JSON.stringify(body), url: `${baseURL}/responses` }
 }
 
 /**
- * Runs a bounded screenshot -> model -> AUV action loop.
+ * Runs a bounded model -> tool call loop.
  *
  * Call stack:
  *
  * {@link runEpisode}
  *   -> {@link runAgent}
- *     -> `display.capture` (AUV)
  *     -> {@link complete} (`POST {baseURL}/responses` or `/chat/completions`)
- *     -> one typed `input.*` command (AUV)
+ *     -> `tools.call` (AUV MCP `invoke`, or the eval's `done`/`fail`)
  *
  * Use when:
  * - a Vieval case needs a real model to drive AUV inside an OSWorld VM
  *
- * Expects:
- * - `invoke` to target a paired guest device
- *
  * Returns:
- * - the AUV Run IDs, model actions, and the terminal action for the evaluator
+ * - the AUV Run IDs, the model's calls, and the terminal action for the evaluator
  */
 export async function runAgent(
   instruction: string,
   endpoint: ModelEndpoint,
-  invoke: Invoke,
+  tools: AgentTools,
   options: { maxSteps: number, signal: AbortSignal },
 ): Promise<AgentResult> {
   const result: AgentResult = { runIds: [], steps: [] }
-  const history: Prompt['turns'] = []
-  let ignoredNote = ''
+  const items: ConversationItem[] = [{ role: 'user', text: `Task: ${instruction}`, type: 'message' }]
+  const definitions = [...tools.definitions, ...episodeTools]
 
   try {
     for (let step = 0; step < options.maxSteps; step += 1) {
-      const capture = await invoke('display.capture', [])
-      result.runIds.push(capture.run_id)
-      const image = capture.artifacts[0]?.file_path
-      if (image == null) {
-        throw new Error(`AUV capture ${capture.run_id} returned no image artifact.`)
+      const reply = await complete(endpoint, { instructions: systemPrompt, items: windowImages(items), tools: definitions }, options.signal)
+      if (reply.text !== '') {
+        items.push({ role: 'assistant', text: reply.text, type: 'message' })
       }
-
-      const reply = await complete(endpoint, {
-        instructions: systemPrompt,
-        turns: [
-          { role: 'user', text: `Task: ${instruction}` },
-          // Only the latest screenshot is sent; earlier turns keep their text.
-          ...history,
-          {
-            image: `data:image/webp;base64,${(await readFile(image)).toString('base64')}`,
-            role: 'user',
-            text: `${ignoredNote}Step ${step + 1} of ${options.maxSteps}. Current screenshot:`,
-          },
-        ],
-      }, options.signal)
-      // History holds only what was executed. With the full reply, the model
-      // assumed its extra concatenated actions had run and planned from a state
-      // that never existed (8 of 10 early zero scores in test_nogdrive).
-      const { action, text, truncated } = parseDecision(reply)
-      history.push({ role: 'assistant', text })
-      ignoredNote = truncated
-        ? 'Only the first action of your previous reply was executed; the others were ignored. Reply with exactly one action. '
-        : ''
-      if (action.type === 'done' || action.type === 'fail') {
-        result.steps.push({ action, reply })
-        result.lastAction = action.type === 'done' ? 'DONE' : 'FAIL'
-        return result
-      }
-      const invocation = toInvocation(action)
-      if (invocation == null) {
-        result.steps.push({ action, reply })
-        await new Promise(resolve => setTimeout(resolve, 2_000))
+      // `parallel_tool_calls: false` asks for one call; anything extra is not
+      // executed and is not recorded, so history matches what ran.
+      const call = reply.calls[0]
+      if (call == null) {
+        result.steps.push({ message: reply.text })
+        items.push({ role: 'user', text: 'Call a tool to act on the computer, or call done or fail.', type: 'message' })
         continue
       }
-      const delivered = await invoke(invocation[0], invocation[1])
-      result.runIds.push(delivered.run_id)
-      result.steps.push({ action, reply, runId: delivered.run_id })
-      // NOTICE: UI effects are asynchronous and AUV input delivery does not wait
-      // for repaint. One second matches OSWorld's default inter-step pause order.
-      await new Promise(resolve => setTimeout(resolve, 1_000))
+      items.push({ type: 'function_call', ...call })
+      if (call.name === 'done' || call.name === 'fail') {
+        result.steps.push({ message: reply.text || undefined, tool: call.name })
+        result.lastAction = call.name === 'done' ? 'DONE' : 'FAIL'
+        return result
+      }
+      const output = await tools.call(call, options.signal)
+      items.push({ callId: call.callId, images: output.images, text: output.text, type: 'function_call_output' })
+      if (output.runId != null) {
+        result.runIds.push(output.runId)
+      }
+      result.steps.push({
+        arguments: call.arguments,
+        message: reply.text || undefined,
+        output: output.text.slice(0, 2_000),
+        runId: output.runId,
+        tool: call.name,
+      })
     }
   }
   catch (error) {
@@ -307,48 +286,92 @@ export async function runAgent(
   return result
 }
 
-/**
- * Maps a model action to AUV invoke argv; `wait` has no invocation.
- *
- * Flags come first and positionals follow `--`, so typed text or a negative
- * scroll delta is never parsed as an option.
- */
-export function toInvocation(action: AgentAction): [string, string[]] | undefined {
-  // NOTICE: OSWorld guests run at a fixed 1920x1080 with scale 1. AUV's
-  // `--normalized` needs a device-specific `display:` target, so the 0..1000
-  // grid is projected onto that fixed screen here instead.
-  const x = (value: number) => String(Math.round(Math.min(Math.max(value, 0), 1000) * 1.919))
-  const y = (value: number) => String(Math.round(Math.min(Math.max(value, 0), 1000) * 1.079))
-  switch (action.type) {
-    case 'click':
-      return ['input.clickPoint', ['--relative-to', 'screen', '--button', action.button ?? 'left', '--click-count', String(action.count ?? 1), '--', x(action.x), y(action.y)]]
-    case 'drag':
-      return ['input.drag', ['--relative-to', 'screen', '--', x(action.x1), y(action.y1), x(action.x2), y(action.y2)]]
-    case 'keys':
-      return ['input.keys', ['--', ...action.keys.map(key => key.toLowerCase())]]
-    case 'scroll':
-      return ['input.scrollPoint', ['--', x(action.x), y(action.y), '0', String(Math.round(action.dy))]]
-    case 'type':
-      return ['input.typeText', ['--', action.text]]
-    default:
-      return undefined
+function chatMessages(prompt: Prompt): unknown[] {
+  const messages: Array<Record<string, unknown>> = prompt.instructions == null ? [] : [{ content: prompt.instructions, role: 'system' }]
+  for (const item of prompt.items) {
+    if (item.type === 'function_call') {
+      const call = { function: { arguments: item.arguments, name: item.name }, id: item.callId, type: 'function' }
+      const previous = messages.at(-1)
+      if (previous?.role === 'assistant' && previous.tool_calls == null) {
+        previous.tool_calls = [call]
+      }
+      else {
+        messages.push({ content: null, role: 'assistant', tool_calls: [call] })
+      }
+      continue
+    }
+    if (item.type === 'function_call_output') {
+      messages.push({ content: item.text, role: 'tool', tool_call_id: item.callId })
+      // Chat `tool` messages carry text only, so images follow as a user turn.
+      if (item.images.length > 0) {
+        messages.push({ content: [{ text: `Images from ${item.callId}:`, type: 'text' }, ...item.images.map(url => ({ image_url: { url }, type: 'image_url' }))], role: 'user' })
+      }
+      continue
+    }
+    if (item.role === 'user' && item.image != null) {
+      messages.push({ content: [{ text: item.text, type: 'text' }, { image_url: { url: item.image }, type: 'image_url' }], role: 'user' })
+      continue
+    }
+    messages.push({ content: item.text, role: item.role })
   }
+  return messages
 }
 
 function isTransientStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500
 }
 
-/** Extracts the assistant text; Responses output may also hold reasoning items. */
-function replyText(api: ModelApi, body: unknown): string {
+/** Extracts the assistant text and function calls; Responses output may also hold reasoning items. */
+function replyFrom(api: ModelApi, body: unknown): Reply {
   if (api === 'chat') {
-    return (body as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? ''
+    const message = (body as { choices?: Array<{ message?: { content?: null | string, tool_calls?: Array<{ function: { arguments: string, name: string }, id: string }> } }> }).choices?.[0]?.message
+    return {
+      calls: (message?.tool_calls ?? []).map(call => ({ arguments: call.function.arguments, callId: call.id, name: call.function.name })),
+      text: message?.content ?? '',
+    }
   }
-  const output = (body as { output?: Array<{ content?: Array<{ text?: string, type: string }>, type: string }> }).output ?? []
-  return output
-    .filter(item => item.type === 'message')
-    .flatMap(item => item.content ?? [])
-    .filter(part => part.type === 'output_text')
-    .map(part => part.text ?? '')
-    .join('')
+  const output = (body as { output?: Array<{ arguments?: string, call_id?: string, content?: Array<{ text?: string, type: string }>, name?: string, type: string }> }).output ?? []
+  return {
+    calls: output
+      .filter(item => item.type === 'function_call')
+      .map(item => ({ arguments: item.arguments ?? '{}', callId: item.call_id ?? '', name: item.name ?? '' })),
+    text: output
+      .filter(item => item.type === 'message')
+      .flatMap(item => item.content ?? [])
+      .filter(part => part.type === 'output_text')
+      .map(part => part.text ?? '')
+      .join(''),
+  }
+}
+
+function responsesItem(item: ConversationItem): unknown {
+  switch (item.type) {
+    case 'function_call':
+      return { arguments: item.arguments, call_id: item.callId, name: item.name, type: 'function_call' }
+    case 'function_call_output':
+      return {
+        call_id: item.callId,
+        output: item.images.length === 0
+          ? item.text
+          : [{ text: item.text, type: 'input_text' }, ...item.images.map(url => ({ image_url: url, type: 'input_image' }))],
+        type: 'function_call_output',
+      }
+    default:
+      if (item.role === 'assistant') {
+        return { content: [{ text: item.text, type: 'output_text' }], role: 'assistant' }
+      }
+      return { content: [{ text: item.text, type: 'input_text' }, ...(item.image == null ? [] : [{ image_url: item.image, type: 'input_image' }])], role: 'user' }
+  }
+}
+
+/** Keeps images only on the latest {@link imagesInHistory} tool outputs. */
+function windowImages(items: ConversationItem[]): ConversationItem[] {
+  let kept = 0
+  return items.toReversed().map((item) => {
+    if (item.type !== 'function_call_output' || item.images.length === 0) {
+      return item
+    }
+    kept += 1
+    return kept <= imagesInHistory ? item : { ...item, images: [], text: `${item.text}\n[Earlier screenshot omitted.]` }
+  }).toReversed()
 }
