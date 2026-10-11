@@ -4,10 +4,10 @@ Vieval schedules, repeats, scores, and reports OSWorld Ubuntu tasks. Each
 case runs this pipeline:
 
 ```text
-fresh KVM Pod over the read-only OSWorld base image
-  -> guest AUV daemon (Linux x86_64) paired with a host AUV client (macOS)
+fresh KVM Pod over the read-only, unmodified OSWorld base image
+  -> guest AUV daemon (Linux x86_64 + bundled OCR runtime) paired with a host AUV client (macOS)
   -> upstream OSWorld setup            (bridge/osworld_bridge.py setup)
-  -> model loop: AUV capture -> model reply (Responses API) -> one typed AUV input command
+  -> model loop: model calls AUV MCP `invoke` (auv --device-id <guest> mcp serve) until done/fail
   -> upstream OSWorld evaluator score  (bridge/osworld_bridge.py evaluate)
   -> Vieval score + metrics, result.json, Pod deleted
 ```
@@ -26,7 +26,8 @@ semantics, so no evaluator is re-implemented in TypeScript.
 | `eval/osworld.eval.ts` | One Vieval task; one case per task id, named `domain/id` |
 | `src/cases.ts` | Loads one case per task id, filtered by environment |
 | `src/episode.ts` | Pod, port-forward, AUV install/pairing, bridge calls, `result.json`, cleanup |
-| `src/agent.ts` | Minimal screenshot -> model -> AUV action loop (not a planner) |
+| `src/agent.ts` | Model -> function call loop over the Responses or Chat API (not a planner) |
+| `src/auvTools.ts`, `src/mcp.ts` | AUV MCP `invoke` as the model's tool; attaches recorded screenshots to tool output |
 | `src/doctor.ts` | Prerequisite checks with reproduce commands -> `results/doctor.json` |
 | `src/summarize.ts` | Aggregates `result.json` files -> `results/summary.{json,md}` |
 | `bridge/` | Python package (Pixi env `osworld`) wrapping upstream `DesktopEnv` setup/evaluate |
@@ -138,6 +139,7 @@ Errors write it too, so the denominator stays honest:
   "score": 1, // absent on error
   "agent": { "lastAction": "DONE", "runIds": [], "steps": [] },
   "auvLinuxSha256": "…",
+  "auvRuntimeSha256": "…",
   "finishedAt": "…"
 }
 ```

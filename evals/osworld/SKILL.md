@@ -11,7 +11,7 @@ command from `evals/osworld/` unless noted.
 ## 0. Environment (once per shell)
 
 ```bash
-export OSWORLD_AUV_LINUX_BINARY=/abs/auv-linux-x86_64   # same commit as macOS
+export OSWORLD_AUV_LINUX_BINARY=/abs/auv-linux-x86_64   # same commit as macOS; .runtime.tar.gz beside it
 export OSWORLD_AUV_MACOS_BINARY=/abs/auv-macos-arm64
 export OSWORLD_KUBECONFIG=$HOME/.kube/config.d/ihome.conf
 export OSWORLD_SOURCE=/abs/OSWorld                       # pinned checkout; default .cache/OSWorld
