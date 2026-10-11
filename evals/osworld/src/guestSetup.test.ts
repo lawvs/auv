@@ -73,6 +73,26 @@ describe('installRuntimeLibraries', () => {
     expect(execute).toHaveBeenCalledTimes(2)
   })
 
+  it('retries when the setup request loses its connection', async () => {
+    // ROOT CAUSE:
+    //
+    // If kubectl port-forward dropped the long apt request (gimp/554785e9,
+    // test_nogdrive 2026-10-11: `fetch failed: read ECONNRESET`), the
+    // transport error escaped and the episode errored. The apt command is
+    // idempotent, so it is sent again.
+    vi.useFakeTimers()
+    const installed = result({ output: 'installed' })
+    const execute = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed', { cause: new Error('read ECONNRESET') }))
+      .mockResolvedValueOnce(installed)
+
+    const installation = installRuntimeLibraries(execute, new AbortController().signal, context)
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    await expect(installation).resolves.toEqual(installed)
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+
   it('does not retry unrelated apt failures', async () => {
     const failure = result({
       error: 'E: Unable to locate package libdoes-not-exist',
