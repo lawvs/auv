@@ -19,7 +19,7 @@ const retryDelayMs = 2_000
  * Installs guest runtime libraries, waiting out transient apt lock contention.
  *
  * A fresh OSWorld VM can start PackageKit concurrently with the episode. Only
- * known apt/dpkg lock failures are retried; package, network, and repository
+ * known apt/dpkg lock and package-cache races are retried; package, network, and repository
  * failures return immediately to preserve the original diagnostic.
  */
 export async function installRuntimeLibraries(
@@ -70,4 +70,6 @@ function isAptLockContention(result: SetupCommandResult): boolean {
     || diagnostic.includes('unable to lock directory')
     || diagnostic.includes('unable to acquire the dpkg frontend lock')
     || diagnostic.includes('is another process using it')
+    // A concurrent apt run replaced pkgcache.bin while this one rebuilt it.
+    || diagnostic.includes('the package cache file is corrupted')
 }

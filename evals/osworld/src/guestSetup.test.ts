@@ -48,6 +48,31 @@ describe('installRuntimeLibraries', () => {
     expect(execute).toHaveBeenCalledTimes(2)
   })
 
+  it('retries when a concurrent apt run replaces the package cache', async () => {
+    // ROOT CAUSE:
+    //
+    // If another apt process rebuilt the package cache during VM startup,
+    // apt-get failed with "The package cache file is corrupted" and the
+    // episode errored (gimp/d52d6308, test_nogdrive 2026-10-11). Like lock
+    // contention, a later attempt succeeds.
+    vi.useFakeTimers()
+    const raced = result({
+      error: 'E: Problem renaming the file /var/cache/apt/pkgcache.bin.w86gQJ to /var/cache/apt/pkgcache.bin - rename (2: No such file or directory)\nE: The package cache file is corrupted',
+      returncode: 100,
+      status: 'error',
+    })
+    const installed = result({ output: 'installed' })
+    const execute = vi.fn()
+      .mockResolvedValueOnce(raced)
+      .mockResolvedValueOnce(installed)
+
+    const installation = installRuntimeLibraries(execute, new AbortController().signal, context)
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    await expect(installation).resolves.toEqual(installed)
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+
   it('does not retry unrelated apt failures', async () => {
     const failure = result({
       error: 'E: Unable to locate package libdoes-not-exist',
