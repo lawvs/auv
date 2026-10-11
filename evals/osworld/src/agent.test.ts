@@ -55,7 +55,12 @@ describe('runAgent model API', () => {
     expect(commands).toEqual(['display.capture', 'input.typeText', 'display.capture'])
     expect(requests.map(request => request.url)).toEqual(['http://proxy.test/v1/responses', 'http://proxy.test/v1/responses'])
     const second = requests[1].body
-    expect(second).toMatchObject({ model: 'm', store: false })
+    // ROOT CAUSE:
+    //
+    // If tool choice was left open, the Codex backend ran image_generation
+    // between answers, several rounds per request (44ee5668 step 1 replayed:
+    // 29-173 s; with tool_choice none: 4 s, one message).
+    expect(second).toMatchObject({ model: 'm', store: false, tool_choice: 'none' })
     expect(second.instructions).toContain('Ubuntu GNOME desktop')
     expect(second.input).toEqual([
       { content: [{ text: 'Task: do it', type: 'input_text' }], role: 'user' },
