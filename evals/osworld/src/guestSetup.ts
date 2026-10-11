@@ -18,9 +18,11 @@ const retryDelayMs = 2_000
 /**
  * Installs guest runtime libraries, waiting out transient apt lock contention.
  *
- * A fresh OSWorld VM can start PackageKit concurrently with the episode. Only
- * known apt/dpkg lock and package-cache races are retried; package, network, and repository
- * failures return immediately to preserve the original diagnostic.
+ * A fresh OSWorld VM can start PackageKit concurrently with the episode. Known
+ * apt/dpkg lock and package-cache races, and setup requests that lose their
+ * connection (`fetch` TypeError), are retried. Package, network, and
+ * repository failures inside the guest return immediately to preserve the
+ * original diagnostic.
  */
 export async function installRuntimeLibraries(
   execute: () => Promise<SetupCommandResult>,
@@ -29,12 +31,19 @@ export async function installRuntimeLibraries(
 ): Promise<SetupCommandResult> {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     signal.throwIfAborted()
-    const result = await execute()
-    if (!isAptLockContention(result) || attempt === maxAttempts) {
+    // A dropped port-forward connection is retried like lock contention;
+    // the apt command is idempotent, so resending it is safe.
+    const result = await execute().catch((error: unknown) => {
+      if (signal.aborted || attempt === maxAttempts || !(error instanceof TypeError)) {
+        throw error
+      }
+      return undefined
+    })
+    if (result != null && (!isAptLockContention(result) || attempt === maxAttempts)) {
       return result
     }
 
-    writeExecutionLog('osworld:guest-setup', 'warn', 'apt lock is busy; retrying runtime library installation', {
+    writeExecutionLog('osworld:guest-setup', 'warn', result == null ? 'setup request lost its connection; retrying runtime library installation' : 'apt lock is busy; retrying runtime library installation', {
       ...context,
       attempt,
       maxAttempts,
