@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { complete, modelApiFrom, parseAction, runAgent, toInvocation } from './agent'
+import { complete, modelApiFrom, parseDecision, runAgent, toInvocation } from './agent'
 
 /** AUV stub: `display.capture` returns a real file, input commands succeed. */
 async function stubInvoke(): Promise<{ commands: string[], invoke: Invoke }> {
@@ -70,6 +70,29 @@ describe('runAgent model API', () => {
     ])
   })
 
+  // ROOT CAUSE:
+  //
+  // If the model concatenated several actions, only the first ran, but the
+  // whole reply went into history. The model then planned from a state that
+  // never existed and ran out of steps.
+  //
+  // The fix keeps only the executed object and says the rest were ignored.
+  it('records only the executed action when a reply holds several', async () => {
+    const first = '{"thought":"open","action":{"type":"keys","keys":["ctrl","l"]}}'
+    const requests = stubModel([
+      { output: [{ content: [{ text: `${first}{"action":{"type":"type","text":"x"}}`, type: 'output_text' }], type: 'message' }] },
+      { output: [{ content: [{ text: '{"action":{"type":"done"}}', type: 'output_text' }], type: 'message' }] },
+    ])
+    const { commands, invoke } = await stubInvoke()
+
+    await runAgent('do it', endpoint('responses'), invoke, { maxSteps: 3, signal: AbortSignal.timeout(10_000) })
+
+    expect(commands).toEqual(['display.capture', 'input.keys', 'display.capture'])
+    const input = requests[1].body.input
+    expect(input[1]).toEqual({ content: [{ text: first, type: 'output_text' }], role: 'assistant' })
+    expect(input[2].content[0].text).toBe('Only the first action of your previous reply was executed; the others were ignored. Reply with exactly one action. Step 2 of 3. Current screenshot:')
+  })
+
   it('keeps the Chat Completions shape when OSWORLD_OPENAI_API=chat', async () => {
     const requests = stubModel([{ choices: [{ message: { content: '{"action":{"type":"fail"}}' } }] }])
     const { invoke } = await stubInvoke()
@@ -122,7 +145,7 @@ describe('modelApiFrom', () => {
   })
 })
 
-describe('parseAction', () => {
+describe('parseDecision', () => {
   // ROOT CAUSE:
   //
   // If the model appended planned turns as concatenated JSON objects, the
@@ -132,11 +155,15 @@ describe('parseAction', () => {
   // The fix keeps only the first balanced object as the current decision.
   it('uses the first object when the model concatenates several turns', () => {
     const reply = '{"thought":"a {brace}","action":{"type":"keys","keys":["F2"]}}{"action":{"type":"wait"}}'
-    expect(parseAction(reply)).toEqual({ keys: ['F2'], type: 'keys' })
+    expect(parseDecision(reply)).toEqual({
+      action: { keys: ['F2'], type: 'keys' },
+      text: '{"thought":"a {brace}","action":{"type":"keys","keys":["F2"]}}',
+      truncated: true,
+    })
   })
 
   it('treats a reply without an action as wait', () => {
-    expect(parseAction('I cannot see the screen.')).toEqual({ type: 'wait' })
+    expect(parseDecision('I cannot see the screen.')).toEqual({ action: { type: 'wait' }, text: 'I cannot see the screen.', truncated: false })
   })
 })
 

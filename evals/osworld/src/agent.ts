@@ -19,6 +19,15 @@ export interface AgentResult {
   steps: Array<{ action: AgentAction, reply: string, runId?: string }>
 }
 
+/** The executed part of one model reply. */
+export interface Decision {
+  action: AgentAction
+  /** The first JSON object of the reply, or the whole reply when none parsed. */
+  text: string
+  /** The reply held more actions after the first; they were not executed. */
+  truncated: boolean
+}
+
 /** Executes one AUV invoke command and returns its parsed JSON result. */
 export type Invoke = (command: string, args: string[]) => Promise<{ artifacts: Array<{ file_path: string }>, run_id: string }>
 
@@ -45,6 +54,12 @@ export interface Prompt {
   turns: Array<{ image?: string, role: 'assistant' | 'user', text: string }>
 }
 
+// NOTICE: One model attempt may not take longer than this. Without it, a
+// stalled proxy stream held a case until Vieval's case timeout (p50 6 s,
+// p99 314 s, max 832 s in the 2026-10-11 test_nogdrive run). A timed-out
+// attempt is retried like a network error.
+const modelAttemptTimeoutMs = 180_000
+
 const systemPrompt = `You operate an Ubuntu GNOME desktop to complete the user's task.
 Each turn you receive the current screenshot. Reply with exactly one JSON object and nothing else:
 {"thought": "<one short sentence>", "action": <action>}
@@ -62,8 +77,8 @@ The user password is "password".`
 /**
  * Requests one model reply, retrying transient proxy failures.
  *
- * Network errors, 408, 429, and 5xx are retried at most three times with a
- * short linear backoff; other HTTP errors fail the case immediately. cliproxyapi
+ * Network errors, attempts over three minutes, 408, 429, and 5xx are retried
+ * at most three times with a short linear backoff; other HTTP errors fail the case immediately. cliproxyapi
  * answers 408 when its upstream stream closes before `response.completed`.
  *
  * Use when:
@@ -76,20 +91,23 @@ The user password is "password".`
 export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: AbortSignal): Promise<string> {
   const request = requestFor(endpoint, prompt)
   for (let attempt = 1; ; attempt += 1) {
-    const response = await fetch(request.url, {
+    const outcome = await fetch(request.url, {
       body: request.body,
       headers: { 'authorization': `Bearer ${endpoint.apiKey}`, 'content-type': 'application/json' },
       method: 'POST',
-      signal,
-    }).catch((error: unknown) => {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(modelAttemptTimeoutMs)]),
+    }).then(async response => response.ok
+      ? { reply: replyText(endpoint.api, await response.json()) }
+      : { response }).catch((error: unknown) => {
       if (attempt >= 3 || signal.aborted) {
         throw error
       }
       return undefined
     })
-    if (response?.ok === true) {
-      return replyText(endpoint.api, await response.json())
+    if (outcome?.reply !== undefined) {
+      return outcome.reply
     }
+    const response = outcome?.response
     if (response != null && (!isTransientStatus(response.status) || attempt >= 3)) {
       throw new Error(`Model request to ${request.url} failed with HTTP ${response.status}: ${await response.text()}`)
     }
@@ -113,12 +131,13 @@ export function modelApiFrom(value: string | undefined): ModelApi {
  * `wait`. Models sometimes append several planned turns as concatenated
  * objects, so only the first balanced object is the current decision.
  */
-export function parseAction(reply: string): AgentAction {
+export function parseDecision(reply: string): Decision {
+  const fallback: Decision = { action: { type: 'wait' }, text: reply, truncated: false }
   let depth = 0
   let inString = false
   const begin = reply.indexOf('{')
   if (begin < 0) {
-    return { type: 'wait' }
+    return fallback
   }
   for (let index = begin; index < reply.length; index += 1) {
     const char = reply[index]
@@ -138,16 +157,19 @@ export function parseAction(reply: string): AgentAction {
       depth += 1
     }
     else if (char === '}' && --depth === 0) {
+      const text = reply.slice(begin, index + 1)
       try {
-        const parsed = JSON.parse(reply.slice(begin, index + 1)) as { action?: AgentAction }
-        return typeof parsed.action?.type === 'string' ? parsed.action : { type: 'wait' }
+        const parsed = JSON.parse(text) as { action?: AgentAction }
+        return typeof parsed.action?.type === 'string'
+          ? { action: parsed.action, text, truncated: reply.includes('{', index + 1) }
+          : fallback
       }
       catch {
         break
       }
     }
   }
-  return { type: 'wait' }
+  return fallback
 }
 
 /**
@@ -211,6 +233,7 @@ export async function runAgent(
 ): Promise<AgentResult> {
   const result: AgentResult = { runIds: [], steps: [] }
   const history: Prompt['turns'] = []
+  let ignoredNote = ''
 
   for (let step = 0; step < options.maxSteps; step += 1) {
     const capture = await invoke('display.capture', [])
@@ -229,13 +252,18 @@ export async function runAgent(
         {
           image: `data:image/webp;base64,${(await readFile(image)).toString('base64')}`,
           role: 'user',
-          text: `Step ${step + 1} of ${options.maxSteps}. Current screenshot:`,
+          text: `${ignoredNote}Step ${step + 1} of ${options.maxSteps}. Current screenshot:`,
         },
       ],
     }, options.signal)
-    history.push({ role: 'assistant', text: reply })
-
-    const action = parseAction(reply)
+    // History holds only what was executed. With the full reply, the model
+    // assumed its extra concatenated actions had run and planned from a state
+    // that never existed (8 of 10 early zero scores in test_nogdrive).
+    const { action, text, truncated } = parseDecision(reply)
+    history.push({ role: 'assistant', text })
+    ignoredNote = truncated
+      ? 'Only the first action of your previous reply was executed; the others were ignored. Reply with exactly one action. '
+      : ''
     if (action.type === 'done' || action.type === 'fail') {
       result.steps.push({ action, reply })
       result.lastAction = action.type === 'done' ? 'DONE' : 'FAIL'
