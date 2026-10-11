@@ -253,7 +253,12 @@ async function connectSetup(
       `${ports.auv}:${guestAuvPort}`,
     ], { signal }, { caseId, podName, runtime: 'host', tool: 'kubectl' })
     let ended = false
+    // NOTICE: Both handlers are required. The returned forward is never
+    // awaited, so when the case aborts, a rejection here was unhandled and
+    // crashed the whole Vieval run (test_nogdrive, 2026-10-11).
     const completion = forward.completion.then(() => {
+      ended = true
+    }, () => {
       ended = true
     })
 
