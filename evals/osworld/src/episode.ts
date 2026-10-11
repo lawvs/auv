@@ -323,7 +323,20 @@ async function installAuv(
   const form = new FormData()
   form.append('file_path', '/home/user/auv')
   form.append('file_data', new Blob([new Uint8Array(binaryBytes).buffer]), 'auv')
-  const upload = await fetch(`${endpoint}/setup/upload`, { body: form, method: 'POST', signal })
+  // NOTICE: kubectl port-forward can time out opening a stream for this
+  // first large request while the forward stays up (chrome/a96b564e,
+  // 2026-10-11: `write EPIPE`). The upload overwrites one path, so transport
+  // failures are retried; HTTP errors are not.
+  let upload: Response | undefined
+  for (let attempt = 1; upload == null; attempt += 1) {
+    upload = await fetch(`${endpoint}/setup/upload`, { body: form, method: 'POST', signal }).catch(async (error: unknown) => {
+      if (attempt >= 3 || signal.aborted) {
+        throw error
+      }
+      await delay(3_000, signal)
+      return undefined
+    })
+  }
   if (!upload.ok) {
     throw new Error(`OSWorld rejected the AUV upload with HTTP ${upload.status}: ${await upload.text()}`)
   }
