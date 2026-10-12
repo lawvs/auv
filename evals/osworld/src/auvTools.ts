@@ -12,6 +12,19 @@ export interface AuvTools extends AgentTools {
   close: () => void
 }
 
+/**
+ * How the model learns AUV command arguments.
+ *
+ * - `schema`: AUV's MCP schema as shipped. Argument metadata lives only in the
+ *   `x-auv-commands` extension, which never reaches the model.
+ * - `catalog`: the same metadata rendered into the `invoke` description.
+ *
+ * TODO(auv-mcp-invoke-catalog): `catalog` is an eval experiment. Move the
+ * rendering into AUV's MCP `invoke` description if it measurably helps, then
+ * drop this switch.
+ */
+export type ToolDocs = 'catalog' | 'schema'
+
 /** Text of one tool output shown to the model; larger results are truncated. */
 const maxOutputText = 20_000
 
@@ -30,6 +43,34 @@ const exposedTools = new Set(['invoke'])
 const evalOwnedFields = ['device_id', 'device_name', 'dry_run', 'store_root']
 
 /**
+ * Renders `x-auv-commands` as plain text the model can read.
+ *
+ * Each command lists its description, its `inputs` keys with AUV's own help
+ * text, and its target rule when a target is allowed.
+ */
+export function invokeCatalog(schema: Record<string, unknown>): string {
+  const commands = (schema['x-auv-commands'] ?? []) as Array<{
+    arguments: Array<{ help?: null | string, input_key: string, repeated: boolean, required: boolean }>
+    description: string
+    id: string
+    target_help: string
+    target_policy: string
+  }>
+  const lines = ['Commands (set command_id; pass arguments as string values in inputs, keyed exactly as listed):']
+  for (const command of commands) {
+    lines.push(`${command.id}: ${command.description}`)
+    for (const argument of command.arguments) {
+      const flags = [argument.required ? 'required' : 'optional', ...(argument.repeated ? ['repeated'] : [])].join(', ')
+      lines.push(`  inputs.${argument.input_key} (${flags}): ${argument.help ?? ''}`.trimEnd())
+    }
+    if (command.target_policy !== 'forbidden') {
+      lines.push(`  target: ${command.target_help}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
  * Starts `auv mcp serve` for one paired guest Device and exposes its tools.
  *
  * Call stack:
@@ -46,12 +87,12 @@ const evalOwnedFields = ['device_id', 'device_name', 'dry_run', 'store_root']
  * model; AUV itself stays text-only so non-vision clients pay nothing.
  */
 export async function startAuvTools(
-  server: Omit<McpServerProcess, 'args'> & { deviceId: string, storeRoot: string },
+  server: Omit<McpServerProcess, 'args'> & { deviceId: string, storeRoot: string, toolDocs: ToolDocs },
   signal: AbortSignal,
 ): Promise<AuvTools> {
   const client = await McpStdioClient.start({ ...server, args: ['--device-id', server.deviceId, 'mcp', 'serve'] }, signal)
   try {
-    const definitions = (await client.listTools(signal)).filter(tool => exposedTools.has(tool.name)).map(functionTool)
+    const definitions = (await client.listTools(signal)).filter(tool => exposedTools.has(tool.name)).map(tool => functionTool(tool, server.toolDocs))
     return {
       call: async (call, callSignal) => await callTool(client, call, server.storeRoot, callSignal),
       close: () => client.close(),
@@ -62,6 +103,17 @@ export async function startAuvTools(
     client.close()
     throw error
   }
+}
+
+/** Reads `OSWORLD_TOOL_DOCS`; unset selects AUV's schema as shipped. */
+export function toolDocsFrom(value: string | undefined): ToolDocs {
+  if (value == null || value === '' || value === 'schema') {
+    return 'schema'
+  }
+  if (value === 'catalog') {
+    return 'catalog'
+  }
+  throw new Error(`OSWORLD_TOOL_DOCS must be "schema" or "catalog", got ${JSON.stringify(value)}.`)
 }
 
 async function callTool(client: McpStdioClient, call: FunctionCall, storeRoot: string, signal: AbortSignal): Promise<ToolOutput> {
@@ -91,13 +143,16 @@ async function callTool(client: McpStdioClient, call: FunctionCall, storeRoot: s
 }
 
 /** Maps one MCP tool definition onto a model function, minus eval-owned fields. */
-function functionTool(tool: McpTool): FunctionTool {
+function functionTool(tool: McpTool, toolDocs: ToolDocs): FunctionTool {
   const parameters = structuredClone(tool.inputSchema)
   const properties = parameters.properties as Record<string, unknown> | undefined
   for (const field of evalOwnedFields) {
     delete properties?.[field]
   }
-  return { description: tool.description, name: tool.name, parameters }
+  const description = toolDocs === 'catalog' && tool.name === 'invoke'
+    ? `${tool.description ?? ''}\n\n${invokeCatalog(tool.inputSchema)}`
+    : tool.description
+  return { description, name: tool.name, parameters }
 }
 
 /** Presents an MCP result as text, attaching recorded image artifacts. */

@@ -72,6 +72,7 @@ directly, and `pnpm doctor` probes it through the same request code.
 | `OSWORLD_OPENAI_API` | `responses` | Wire API: `responses` or `chat` (`/chat/completions`) |
 | `OSWORLD_MODEL` | `gpt-5.5` | Comma-separated; each model is one run-matrix row |
 | `OSWORLD_MAX_STEPS` | `15` | Model turns per episode |
+| `OSWORLD_TOOL_DOCS` | `schema` | `catalog` renders AUV's `x-auv-commands` argument metadata into the `invoke` description (experiment; see `src/auvTools.ts`) |
 | `OSWORLD_CASE_TIMEOUT_MINUTES` | `60` | Wall-clock budget per episode; raise it with `OSWORLD_MAX_STEPS` |
 | `OSWORLD_LOG_FILE` | `.vieval/logs/execution-<time>-<pid>.jsonl` | JSONL record of every command and Kubernetes action; nothing is printed to stdout |
 

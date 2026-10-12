@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path'
 import { errorCauseFrom, errorMessageFrom, errorStackFrom, sleepWithAbort } from '@moeru/std'
 
 import { AgentRunError, runAgent } from './agent'
-import { startAuvTools } from './auvTools'
+import { startAuvTools, toolDocsFrom } from './auvTools'
 import { packageDirectory } from './cases'
 import { observeGuestCommand, recordKubernetesResource, runLoggedCommand, startLoggedCommand } from './executionLog'
 
@@ -120,7 +120,7 @@ export async function runEpisode(
   await mkdir(evidenceDirectory, { recursive: true })
   // `scripts/summarize.ts` aggregates these records, including errors that
   // never reached the evaluator, so the denominator stays honest.
-  const record = { api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
+  const record = { api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId, toolDocs: toolDocsFrom(process.env.OSWORLD_TOOL_DOCS) }
 
   const kubectl = ['--kubeconfig', kubeconfig, '--namespace', cluster.namespace]
   const log = { caseId, podName }
@@ -151,6 +151,7 @@ export async function runEpisode(
       executable: macosAuvBinary,
       stderrFile: join(evidenceDirectory, 'auv-mcp.stderr.log'),
       storeRoot: join(evidenceDirectory, 'auv-runs'),
+      toolDocs: toolDocsFrom(process.env.OSWORLD_TOOL_DOCS),
     }, signal)
 
     const setup = await bridge('setup', item, ports, evidenceDirectory, undefined, log, signal)
