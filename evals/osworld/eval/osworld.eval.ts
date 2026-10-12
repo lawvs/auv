@@ -4,7 +4,6 @@ import { caseOf, describeTask, expect } from 'vieval'
 import { modelFromRun, openaiFromRunContext } from 'vieval/plugins/chat-models'
 
 import { modelApiFrom } from '../src/agent'
-import { toolDocsFrom } from '../src/auvTools'
 import { loadCases } from '../src/cases'
 import { runEpisode } from '../src/episode'
 
@@ -26,7 +25,6 @@ describeTask('osworld', () => {
       const api = modelApiFrom(process.env.OSWORLD_OPENAI_API)
       context.recordMetric('osworld.model', model)
       context.recordMetric('osworld.model.api', api)
-      context.recordMetric('osworld.tool_docs', toolDocsFrom(process.env.OSWORLD_TOOL_DOCS))
       context.recordMetric('osworld.repeat', repeat)
 
       const result = await runEpisode(item, { api, apiKey, baseURL, model }, { repeat, signal: context.signal })
