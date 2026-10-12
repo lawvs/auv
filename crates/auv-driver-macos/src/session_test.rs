@@ -720,8 +720,7 @@ fn missing_application_keyboard_target_is_not_found() {
 #[ignore = "requires a live macOS WindowServer"]
 fn unresolved_bundle_that_is_not_running_says_so() {
   let session = MacosDriverSession { _private: () };
-  let error =
-    session.window().resolve(SelectWindow::main_visible().owned_by(App::id("ai.moeru.auv.nonexistent-window-test"))).unwrap_err();
+  let error = session.window().resolve(SelectWindow::main_visible().owned_by(App::id("ai.moeru.auv.nonexistent-window-test"))).unwrap_err();
   match error {
     DriverError::NotFound { target } => assert!(target.contains("(not running)"), "{target}"),
     other => panic!("expected NotFound, got {other}"),
