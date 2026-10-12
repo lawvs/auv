@@ -26,7 +26,7 @@ use x11rb::{
   errors::ReplyError,
   protocol::{
     Event,
-    xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, MapState, PropMode, WindowClass},
+    xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, InputFocus, MapState, PropMode, WindowClass},
   },
   rust_connection::RustConnection,
 };
@@ -57,6 +57,10 @@ const WINDOW_ID_PREFIX: &str = "x11:0x";
 // delay. Revisit only with evidence of a WM that needs longer.
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(2);
 const ACTIVATION_POLL: Duration = Duration::from_millis(20);
+// NOTICE(x11-focus-fallback): a WM normally moves focus together with
+// `_NET_ACTIVE_WINDOW` within a few polls; a quarter second leaves it room
+// before the driver focuses the client itself. Revisit with WM evidence.
+const FOCUS_FALLBACK_AFTER: Duration = Duration::from_millis(250);
 // The server answers our own zero-length property append immediately; one
 // second only bounds a stalled connection.
 const SERVER_TIME_TIMEOUT: Duration = Duration::from_secs(1);
@@ -287,12 +291,31 @@ impl Ewmh {
       .send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, event)
       .map_err(backend)?;
     self.connection.flush().map_err(backend)?;
-    let deadline = Instant::now() + ACTIVATION_TIMEOUT;
+    let started = Instant::now();
+    let deadline = started + ACTIVATION_TIMEOUT;
+    let mut focus_requested = false;
     loop {
-      if self.is_active(xid)? {
+      let active = self.active_window()? == Some(xid);
+      if active && self.focus_within(xid)? {
         return Ok(());
       }
+      // Some WMs mark the window active but leave keyboard focus elsewhere
+      // (a lingering grab, a focus-follows-mouse policy). The window is then
+      // mapped, so focus it directly once, as `xdotool windowactivate` and
+      // cua-driver's `foreground.rs` do, with the same server timestamp.
+      if active && !focus_requested && started.elapsed() >= FOCUS_FALLBACK_AFTER {
+        focus_requested = true;
+        self.connection.set_input_focus(InputFocus::PARENT, xid, time).map_err(backend)?;
+        self.connection.flush().map_err(backend)?;
+      }
       if Instant::now() >= deadline {
+        if active {
+          return Err(backend(format!(
+            "X11 window manager activated {} but keyboard focus did not enter it within {}ms, even after a direct focus request; no input was delivered",
+            window_id(xid),
+            ACTIVATION_TIMEOUT.as_millis()
+          )));
+        }
         let active = self.active_window()?.map_or_else(|| "none".to_string(), window_id);
         return Err(backend(format!(
           "X11 window manager did not activate {} within {}ms (active window: {active}); no input was delivered",
