@@ -17,6 +17,8 @@ mod input;
 #[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
+mod window;
+#[cfg(target_os = "linux")]
 pub use capture::DisplayApi;
 #[cfg(target_os = "linux")]
 pub use clipboard::ClipboardApi;
@@ -24,6 +26,8 @@ pub use clipboard::ClipboardApi;
 pub use input::InputApi;
 #[cfg(target_os = "linux")]
 pub use session::X11DriverSession;
+#[cfg(target_os = "linux")]
+pub use window::WindowApi;
 
 /// Explicit opt-in to a legacy X11 session using `DISPLAY` and Xauthority.
 ///
@@ -65,7 +69,7 @@ fn descriptor() -> DriverDescriptor {
   DriverDescriptor {
     id: "linux.x11",
     platform: PlatformKind::Linux,
-    description: "Legacy X11 display capture and foreground XTEST input; not recommended for new deployments.",
+    description: "Legacy X11 display capture, EWMH window observation, and foreground XTEST input; not recommended for new deployments.",
   }
 }
 

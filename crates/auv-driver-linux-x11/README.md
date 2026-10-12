@@ -13,9 +13,10 @@ access to native Wayland windows or the complete Wayland desktop.
 
 This Rust driver crate uses the shared `auv-driver-common` contracts. It can be
 selected explicitly, and `auv-driver::LocalDriver` selects it for a pure X11
-process environment. The scope is screen observation, foreground
-mouse/keyboard input, and text paste through CLIPBOARD ownership. Dispatch success is not application-level verification:
-callers must inspect the resulting state.
+process environment. The scope is screen observation, EWMH window
+observation, foreground mouse/keyboard input, and text paste through CLIPBOARD
+ownership. Dispatch success is not application-level verification: callers
+must inspect the resulting state.
 
 ## When to use
 
@@ -37,15 +38,20 @@ the facade preserves the Wayland default and its existing diagnostics.
 
 The daemon Runner uses the same selection. Display capture and foreground
 input are available there, including sampled movement/drag, bounded held
-buttons/keys, screen-point scrolling, and `input.pasteText`. Unsupported X11
-window calls and clipboard copy remain explicit errors. This does not make every higher-level Electron
+buttons/keys, screen-point scrolling, and `input.pasteText`. With an EWMH
+window manager it also serves `window.list`/`window.resolve`, window-relative
+scrolling, and application/window-targeted keyboard input (activate, confirm,
+then foreground XTEST; see below). Other X11 window calls and clipboard copy
+remain explicit errors. This does not make every higher-level Electron
 workflow X11-capable.
 
 ## Evidence
 
 Validated first on Debian 12 arm64 with Xvfb 21.1.7 and Tk 8.6.13, then through
 the integrated root facade on Ubuntu 24.04 x86_64 with XFCE and dummy Xorg
-1920x1080. macOS rejects session opening.
+1920x1080. macOS rejects session opening. EWMH window observation, activation,
+targeted typing, and window-relative scrolling were validated only with Xvfb,
+openbox, and Tk 8.6 on Ubuntu 22.04 x86_64 (Docker on an Apple Silicon host).
 Physical-seat and GPU-accelerated Xorg and XWayland remain unvalidated.
 
 ## Build and session setup
@@ -120,6 +126,21 @@ assert!(!delivery.verified); // Inspect a new observation to verify the UI effec
   when the session drops. `input().paste` sends Ctrl+V only.
 - `clipboard().snapshot/restore/set_text`: text-only clipboard access through
   the same owner; `set_text` content also lives only as long as the session.
+- `window().list/resolve`: EWMH client windows, top-most first. IDs are
+  `x11:0x<XID>`; frames include WM decorations; `app_bundle_id` carries
+  `_GTK_APPLICATION_ID`, else the WM_CLASS class; `process_id` comes from
+  `_NET_WM_PID` when the client sets it. Application selectors match the GTK id
+  and both WM_CLASS strings case-insensitively.
+- `window().to_screen_point/to_window_point/scroll`: window-relative points map
+  through the frame origin. `scroll` activates the window through
+  `_NET_ACTIVE_WINDOW`, confirms it, and delivers foreground XTEST wheel events.
+- `input().input_keyboard` with an application or window target and
+  `ForegroundPreferred` policy activates and confirms the window before each
+  action, then types through foreground XTEST. Results record a failed
+  `window_targeted_keyboard` attempt as the fallback reason and
+  `focus_disturbance: foreground`. Background policies are unsupported. See the
+  X11 exception in
+  `docs/ai/references/invoke-cli/2026-09-08-targeted-keyboard-contract.md`.
 - `input().scroll_at`: logical-pixel deltas (positive X right, positive Y down),
   converted to XTEST wheel detents at 120 pixels per notch with sub-notch
   remainder carried within one session; at most 1024 detents per axis per call.
@@ -140,10 +161,11 @@ interleave input; dedicate the session to one agent worker.
 
 ## Intentional limits
 
-Window enumeration/activation, AT-SPI, clipboard copy, rich (non-text)
-clipboard restore, INCR transfers, background input, and overlay rendering are
-not part of this compatibility crate. The root facade
-can apply its existing capture-driven OCR to X11 display captures. Existing
+AT-SPI, clipboard copy, rich (non-text) clipboard restore, INCR transfers,
+background input, window capture/text search, window-relative click/drag, and
+overlay rendering are not part of this compatibility crate. Window operations
+require an EWMH window manager; without one they fail as unsupported. The root
+facade can apply its existing capture-driven OCR to X11 display captures. Existing
 shared types are reused; there is no alternate action-result or artifact schema.
 `allow_clipboard_fallback` permits but does not require a fallback; `type_text`
 never takes that path. Use `paste_text` to paste explicitly.
@@ -163,7 +185,7 @@ types into a real application. Run it in a dedicated Xvfb display with
 ```bash
 env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 \
   xvfb-run -a -s '-screen 0 800x600x24' \
-  cargo test -p auv-driver-linux-x11 --test xvfb -- --ignored --nocapture
+  cargo test -p auv-driver-linux-x11 --test xvfb -- --ignored --nocapture --skip ewmh_
 ```
 
 It checks monitor pixels, region bounds, application text, screenshot freshness,
@@ -173,6 +195,20 @@ explicit Ctrl+A select-all binding. A second test pastes Unicode text into the
 fixture, checks that the prior clipboard text and the empty clipboard are
 restored, and that a client taking `CLIPBOARD` mid-paste keeps it. Both tests
 share the display and serialize on a lock. When using Docker, pass `--init` so
-`xvfb-run` receives the X server readiness signal.
-The fixture and X server are disposed after the test. It does not establish
-general Xorg/Wayland desktop support.
+`xvfb-run` receives the X server readiness signal. The fixture and X server
+are disposed after the test.
+
+The EWMH probe needs a window manager on its own display, plus `openbox` and
+`x11-utils` (for `xprop`/`xwininfo` in the fixture):
+
+```bash
+Xvfb :98 -screen 0 800x600x24 & DISPLAY=:98 openbox &
+env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 DISPLAY=:98 \
+  cargo test -p auv-driver-linux-x11 --test xvfb -- --ignored ewmh_
+```
+
+It checks window listing, application/title/frontmost resolution, dry-run
+recipient binding, activation of an occluded window for targeted typing and
+wheel input, stale-owner rejection, and the recorded fallback reasons. Stop
+the Xvfb and openbox processes afterwards. Neither probe establishes general
+Xorg/Wayland desktop or window-manager support.

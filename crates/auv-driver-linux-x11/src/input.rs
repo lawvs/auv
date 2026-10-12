@@ -25,7 +25,10 @@ impl InputApi<'_> {
     policy: InputPolicy,
     timeout: Duration,
   ) -> DriverResult<auv_driver_common::KeyboardHold> {
-    validate_foreground(target, policy, "X11 targeted keyboard input")?;
+    // TODO(x11-targeted-key-hold): held keys stay foreground-only. A hold
+    // outlives one activation check, so targeting it needs a focus contract
+    // for the whole hold lifetime; reopen with an owner-approved hold slice.
+    validate_foreground(target, policy, "X11 targeted held keyboard input")?;
     let keys = parse_keys(&PressKeysOptions {
       keys,
       ..Default::default()
@@ -57,7 +60,14 @@ impl InputApi<'_> {
     hold.wait_and_release(duration)
   }
 
-  /// Validates a complete foreground batch before delivering its first event.
+  /// Validates a complete batch and binds its recipient before delivering the
+  /// first event.
+  ///
+  /// An application or window target is an X11 exception to targeted
+  /// keyboard delivery: XTEST cannot bind events to a window, so each action
+  /// activates the recipient through EWMH, confirms it holds focus, and then
+  /// delivers foreground XTEST events. Focus is re-checked before every
+  /// repetition and after each action; a change stops the batch without retry.
   pub fn input_keyboard(
     &self,
     target: &InputTarget,
@@ -73,13 +83,23 @@ impl InputApi<'_> {
           .map_err(|cause| keyboard_failure(cause, index, vec![], 0))?;
       }
     }
+    let recipient = self.session.window().recipient(target).map_err(|cause| keyboard_failure(cause, 0, vec![], 0))?;
     if dry_run {
       return Ok(None);
     }
 
     let mut completed = Vec::new();
     for (index, plan) in plans.into_iter().enumerate() {
-      let action = match plan {
+      if let Some(recipient) = &recipient {
+        self.session.window().prepare(recipient).map_err(|cause| keyboard_failure(cause, index, completed.clone(), 0))?;
+      }
+      let confirm = |repetition| {
+        let Some(recipient) = &recipient else {
+          return Ok(());
+        };
+        self.session.window().confirm(recipient).map_err(|cause| keyboard_failure(cause, index, completed.clone(), repetition))
+      };
+      let mut action = match plan {
         KeyboardPlan::Press {
           keys,
           count,
@@ -91,6 +111,7 @@ impl InputApi<'_> {
           for repetition in 0..count {
             if repetition > 0 {
               std::thread::sleep(interval);
+              confirm(repetition)?;
             }
             with_keys(&mut *input, &keys, |_| Ok(())).map_err(|cause| keyboard_failure(cause, index, completed.clone(), repetition))?;
             let action = delivered(false);
@@ -100,14 +121,21 @@ impl InputApi<'_> {
               combined = Some(action);
             }
           }
+          drop(input);
           std::thread::sleep(settle);
+          confirm(count)?;
           combined.expect("validated positive key repetition count")
         }
         KeyboardPlan::Type { text, options } => {
-          self.type_text(&text, options).map_err(|cause| keyboard_failure(cause, index, completed.clone(), 0))?
+          let action = self.type_text(&text, options).map_err(|cause| keyboard_failure(cause, index, completed.clone(), 0))?;
+          confirm(0)?;
+          action
         }
         KeyboardPlan::Paste { options } => self.paste_text(options).map_err(|cause| keyboard_failure(cause, index, completed.clone(), 0))?,
       };
+      if let Some(recipient) = &recipient {
+        foreground_fallback(&mut action, recipient);
+      }
       completed.push(action);
     }
     Ok(Some(completed))
@@ -461,13 +489,16 @@ fn validate_keyboard_batch(target: &InputTarget, inputs: &[KeyboardInput]) -> Re
   if inputs.is_empty() {
     return Err(keyboard_failure(invalid("keyboard input requires at least one action"), 0, vec![], 0));
   }
-  if !matches!(target, InputTarget::Foreground) {
-    return Err(keyboard_failure(DriverError::unsupported("X11 targeted keyboard input"), 0, vec![], 0));
-  }
+  let targeted = !matches!(target, InputTarget::Foreground);
   inputs
     .iter()
     .enumerate()
     .map(|(index, input)| {
+      // NOTICE(x11-targeted-keyboard): background policies have no X11 route;
+      // see the X11 exception in the targeted keyboard contract.
+      if targeted && input.policy() != InputPolicy::ForegroundPreferred {
+        return Err(keyboard_failure(DriverError::unsupported("X11 background keyboard input"), index, vec![], 0));
+      }
       if input.policy() != InputPolicy::ForegroundPreferred {
         return Err(keyboard_failure(invalid("background keyboard input requires supported targeted delivery"), index, vec![], 0));
       }
@@ -492,6 +523,21 @@ fn validate_keyboard_batch(target: &InputTarget, inputs: &[KeyboardInput]) -> Re
       }
     })
     .collect()
+}
+
+/// Records targeted keyboard delivery as the foreground fallback it is.
+fn foreground_fallback(action: &mut InputActionResult, recipient: &crate::window::Recipient) {
+  action.attempts.insert(
+    0,
+    InputAttempt::failure(
+      InputDeliveryPath::WindowTargetedKeyboard,
+      format!(
+        "X11 has no window-bound keyboard delivery; activated {} through EWMH _NET_ACTIVE_WINDOW, confirmed it held focus, and delivered foreground XTEST events",
+        recipient.describe()
+      ),
+    ),
+  );
+  action.focus_disturbance = DisturbanceLevel::Foreground;
 }
 
 fn keyboard_failure(
@@ -535,12 +581,14 @@ fn validate_foreground(target: &InputTarget, policy: InputPolicy, unsupported: &
 // until a receiver test demonstrates a different X11 application scaling.
 // TODO(x11-hi-res-wheel): sub-notch deltas persist only in one X11 session;
 // add a pixel-precise path if an X11 consumer requires exact small deltas.
+pub(crate) const PIXELS_PER_WHEEL_NOTCH: f64 = 120.0;
+
 fn wheel_notches(remainder: (f64, f64), scroll: Scroll) -> DriverResult<((i32, i32), (f64, f64))> {
   if !scroll.delta_x.is_finite() || !scroll.delta_y.is_finite() || (scroll.delta_x == 0.0 && scroll.delta_y == 0.0) {
     return Err(invalid("X11 scroll requires finite, non-zero logical-pixel deltas"));
   }
-  let x = remainder.0 + scroll.delta_x / 120.0;
-  let y = remainder.1 + scroll.delta_y / 120.0;
+  let x = remainder.0 + scroll.delta_x / PIXELS_PER_WHEEL_NOTCH;
+  let y = remainder.1 + scroll.delta_y / PIXELS_PER_WHEEL_NOTCH;
   if x.abs() > f64::from(i32::MAX) || y.abs() > f64::from(i32::MAX) {
     return Err(invalid("X11 scroll exceeds the wheel notch range"));
   }
