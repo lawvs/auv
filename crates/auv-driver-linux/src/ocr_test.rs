@@ -2,7 +2,6 @@ use auv_driver_common::geometry::Rect;
 
 use super::*;
 
-#[test]
 // ROOT CAUSE:
 //
 // If Tesseract ran on a 1x 1920x1080 capture, small UI text was often not
@@ -47,6 +46,7 @@ level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theigh
   assert!(text_matches_from_tsv(tsv, "Huashan jpg", 1.0).matches.is_empty(), "a dot is not a space");
 }
 
+#[test]
 #[cfg(target_os = "linux")]
 fn rejects_buffer_with_mismatched_length() {
   let result = recognize_text_in_rgba(&[0u8; 7], 2, 2, &TextRecognitionOptions::default());
