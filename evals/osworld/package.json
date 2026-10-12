@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@vieval/viewer": "catalog:",
+    "@vieval/ui": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:vitest"

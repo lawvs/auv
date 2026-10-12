@@ -24,8 +24,8 @@ minimumReleaseAgeExclude:
   - '@xsai/stream-text@0.5.0-beta.7'
   - apeira@0.0.7
   - '@moeru/std@0.1.0-beta.20'
-  - vieval@0.2.0
-  - '@vieval/viewer@0.2.0'
+  - vieval@0.2.1
+  - '@vieval/ui@0.2.1'
 
 shellEmulator: true
 
@@ -84,7 +84,7 @@ catalog:
   '@types/three': ^0.186.0
   '@typescript/vfs': ^1.6.5
   '@unocss/eslint-plugin': ^66.10.5
-  '@vieval/viewer': 0.2.0
+  '@vieval/ui': 0.2.1
   '@vitejs/plugin-react': ^6.1.1
   '@vitest/browser-playwright': 4.1.10
   acorn: ^8.18.0
@@ -123,7 +123,7 @@ catalog:
   typescript: ^6.0.3
   unocss: ^66.10.5
   unrun: ^0.3.1
-  vieval: 0.2.0
+  vieval: 0.2.1
   vite: ^8.1.0
   zustand: ^5.0.15
 

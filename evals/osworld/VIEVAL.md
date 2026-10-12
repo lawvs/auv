@@ -107,7 +107,7 @@ OSWORLD_CONCURRENCY=2 pnpm -F @auv-js/eval-osworld eval:run
 pnpm -F @auv-js/eval-osworld results:summarize           # results/summary.{json,md}
 ```
 
-`eval:run` serves the Vieval web viewer (`@vieval/viewer`) while the run
+`eval:run` serves the Vieval web viewer (`@vieval/ui`) while the run
 executes and keeps it up until Ctrl+C; pass `--viewer-port <port>` when
 51204 is taken. Each case links its episode directory through the
 `osworld.evidence` metric, so the case page shows `result.json`, agent steps
