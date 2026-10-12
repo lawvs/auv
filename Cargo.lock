@@ -771,7 +771,7 @@ dependencies = [
 
 [[package]]
 name = "auv-driver-linux-x11"
-version = "0.0.33"
+version = "0.0.34"
 dependencies = [
  "auv-driver-common",
  "enigo",
@@ -2501,7 +2501,7 @@ checksum = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.7",
+ "syn 3.0.8",
 ]
 
 [[package]]
