@@ -169,6 +169,30 @@ fn special_keys_map_to_distinct_x11_keysyms() {
   assert!(parse_key("fn").is_err());
 }
 
+// ROOT CAUSE:
+//
+// If a model pressed `ctrl+comma` (GIMP preferences) or `arrowright`, the
+// X11 driver failed with `unknown key "comma"` because its table had no
+// spelled-out punctuation and no separator or camel-case aliases. OSWorld
+// episodes lost a step on each.
+//
+// The fix falls back to the shared logical key names, sending printable
+// symbols as characters so Enigo chooses the keycode and Shift level.
+#[test]
+fn spelled_out_punctuation_and_arrow_aliases_resolve_through_shared_names() {
+  assert_eq!(parse_key("comma").unwrap(), Key::Unicode(','));
+  assert_eq!(parse_key("plus").unwrap(), Key::Unicode('+'));
+  assert_eq!(parse_key("bracket_left").unwrap(), Key::Unicode('['));
+  assert_eq!(parse_key("arrowright").unwrap(), Key::Other(xkeysym::Keysym::Right.raw()));
+  assert_eq!(parse_key("Page_Down").unwrap(), Key::Other(xkeysym::Keysym::Page_Down.raw()));
+  let options = KeyPressOptions {
+    key: "ctrl+comma".into(),
+    ..Default::default()
+  };
+  assert_eq!(parse_keys(&options.into()).unwrap(), [Key::Control, Key::Unicode(',')]);
+  assert!(parse_key("notakey").is_err());
+}
+
 #[test]
 fn rejects_unrepresentable_coordinates_and_invalid_text_before_mutation() {
   for point in [

@@ -708,11 +708,34 @@ fn parse_key(name: &str) -> DriverResult<Key> {
       let mut chars = name.chars();
       match (chars.next(), chars.next()) {
         (Some(ch), None) if ch.is_ascii_graphic() => Key::Unicode(ch),
-        _ => return Err(invalid(format!("unknown key {name:?}; use type_text for Unicode text"))),
+        _ => shared_key(name)?,
       }
     }
   };
   Ok(key)
+}
+
+/// Resolves spellings outside this driver's table through the shared logical
+/// key names (`comma`, `arrow_right`, `page-down`, …). Printable ASCII
+/// symbols go through `Key::Unicode` like a typed character, so Enigo picks
+/// the keycode and Shift level; other keysyms are sent as they are.
+fn shared_key(name: &str) -> DriverResult<Key> {
+  use auv_driver_common::{Key as LogicalKey, Modifier};
+  let unknown = || invalid(format!("unknown key {name:?}; use type_text for Unicode text"));
+  Ok(match name.parse::<LogicalKey>().map_err(|_| unknown())? {
+    LogicalKey::Modifier(Modifier::Control) => Key::Control,
+    LogicalKey::Modifier(Modifier::Shift) => Key::Shift,
+    LogicalKey::Modifier(Modifier::Alt) => Key::Alt,
+    LogicalKey::Modifier(Modifier::Meta) => Key::Meta,
+    // The table above stops at F24, as Enigo does; keep F25..F35 rejected.
+    LogicalKey::Symbol(symbol) if (xkeysym::Keysym::F1.raw()..=xkeysym::Keysym::F35.raw()).contains(&symbol.raw()) => {
+      return Err(unknown());
+    }
+    LogicalKey::Symbol(symbol) => match symbol.key_char() {
+      Some(ch) if ch.is_ascii_graphic() => Key::Unicode(ch),
+      _ => Key::Other(symbol.raw()),
+    },
+  })
 }
 
 // Every attempted press is paired with a release, including a press reporting
