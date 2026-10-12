@@ -12,9 +12,10 @@ import { terminalUseOf } from '../src/terminalUse'
 // evaluation. Raise it together with OSWORLD_MAX_STEPS.
 const caseTimeoutMs = Number(process.env.OSWORLD_CASE_TIMEOUT_MINUTES ?? 60) * 60 * 1000
 
-// NOTICE: One Vieval task holds every case because Vieval applies its case
-// concurrency cap within a task and runs separate task definitions in this
-// module one after another. The OSWorld domain is the case-name prefix.
+// NOTICE: One task holds every case: Vieval 0.2.0 caps cases per task only,
+// and OSWORLD_CONCURRENCY must bound all VMs. Domain is the case prefix.
+// TODO(osworld-domain-tasks): one task per domain once Vieval shares a case
+// cap across a project's tasks (owner is adding it).
 describeTask('osworld', () => {
   for (const item of loadCases()) {
     caseOf(`${item.domain}/${item.task.id}`, async (context) => {
