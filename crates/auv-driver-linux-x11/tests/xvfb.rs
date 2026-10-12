@@ -3,8 +3,8 @@
 
 use auv_driver_common::{
   App, CaptureOptions, Click, ClickModifiers, DisturbanceLevel, Driver, DriverError, InputDeliveryPath, InputPolicy, InputTarget,
-  KeyPressOptions, KeyboardInput, MoveMouseRequest, PasteTextOptions, Point, PressKeysOptions, Rect, ScreenPoint, Scroll,
-  ScrollOptions, TextSubmit, TypeTextOptions, Window, WindowPoint, WindowSelector, input::MouseButton,
+  KeyPressOptions, KeyboardInput, MoveMouseRequest, PasteTextOptions, Point, PressKeysOptions, Rect, ScreenPoint, Scroll, ScrollOptions,
+  TextSubmit, TypeTextOptions, Window, WindowPoint, WindowSelector, input::MouseButton,
 };
 use auv_driver_linux_x11::X11Driver;
 use std::{
