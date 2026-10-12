@@ -9,7 +9,7 @@ fn window(id: &str, title: Option<&str>, app: Option<&str>, pid: u32, frame: Rec
     reference: WindowRef { id: id.to_string() },
     title: title.map(str::to_string),
     app_name: app.map(str::to_string),
-    app_bundle_id: None,
+    application_id: None,
     process_id: (pid != 0).then_some(pid),
     frame,
     coordinate_space: CoordinateSpace::Screen,
@@ -132,7 +132,7 @@ fn invisible_windows_are_never_matched() {
 }
 
 #[test]
-fn bundle_selector_never_matches_on_windows() {
+fn application_id_selector_never_matches_on_windows() {
   let windows = vec![window(
     "1",
     Some("Doc"),
@@ -142,7 +142,7 @@ fn bundle_selector_never_matches_on_windows() {
   )];
 
   let selector = WindowSelector::default().owned_by(AppSelector {
-    bundle: Some(TextMatcher::Exact("com.example.app".to_string())),
+    id: Some(TextMatcher::Exact("com.example.app".to_string())),
     ..AppSelector::default()
   });
 

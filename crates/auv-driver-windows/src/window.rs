@@ -155,13 +155,13 @@ fn matches_app_selector(window: &Window, selector: &AppSelector) -> bool {
   {
     return false;
   }
-  // NOTICE: app_bundle_id is a macOS concept and is always None on Windows, so
-  // a bundle matcher can never match here. Selectors should use name or pid.
-  if let Some(bundle) = &selector.bundle {
-    let Some(app_bundle_id) = &window.app_bundle_id else {
+  // NOTICE: Windows does not report application_id yet (see `list` below), so
+  // an application id matcher never matches here. Selectors use name or pid.
+  if let Some(matcher) = &selector.id {
+    let Some(application_id) = &window.application_id else {
       return false;
     };
-    if !matches_text(app_bundle_id, bundle) {
+    if !matches_text(application_id, matcher) {
       return false;
     }
   }
@@ -333,8 +333,10 @@ mod native {
       },
       title: window_title(hwnd),
       app_name: process_name(pid),
-      // NOTICE: app_bundle_id is macOS-only; Windows has no equivalent.
-      app_bundle_id: None,
+      // TODO(windows-application-id): the process image name in app_name is
+      // the id app.activate accepts. Reporting it here too would change
+      // window.resolve matching, so it waits for an owner-approved slice.
+      application_id: None,
       process_id: (pid != 0).then_some(pid),
       frame,
       coordinate_space: CoordinateSpace::Screen,

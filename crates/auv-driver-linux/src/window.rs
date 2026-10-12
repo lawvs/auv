@@ -121,11 +121,11 @@ fn matches_app_selector(window: &Window, selector: &AppSelector) -> bool {
   {
     return false;
   }
-  if let Some(bundle) = &selector.bundle {
-    let Some(app_bundle_id) = &window.app_bundle_id else {
+  if let Some(matcher) = &selector.id {
+    let Some(application_id) = &window.application_id else {
       return false;
     };
-    if !matches_text(app_bundle_id, bundle) {
+    if !matches_text(application_id, matcher) {
       return false;
     }
   }
@@ -142,7 +142,7 @@ fn matches_app_selector(window: &Window, selector: &AppSelector) -> bool {
 
 fn is_desktop_shell_surface(window: &Window) -> bool {
   matches!(window.app_name.as_deref(), Some("gnome-shell" | "plasmashell"))
-    || matches!(window.app_bundle_id.as_deref(), Some("org.gnome.Shell" | "org.kde.plasmashell"))
+    || matches!(window.application_id.as_deref(), Some("org.gnome.Shell" | "org.kde.plasmashell"))
 }
 
 fn matches_text(value: &str, matcher: &TextMatcher) -> bool {

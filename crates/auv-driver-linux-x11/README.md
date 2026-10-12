@@ -127,7 +127,7 @@ assert!(!delivery.verified); // Inspect a new observation to verify the UI effec
 - `clipboard().snapshot/restore/set_text`: text-only clipboard access through
   the same owner; `set_text` content also lives only as long as the session.
 - `window().list/resolve`: EWMH client windows, top-most first. IDs are
-  `x11:0x<XID>`; frames include WM decorations; `app_bundle_id` carries
+  `x11:0x<XID>`; frames include WM decorations; `application_id` carries
   `_GTK_APPLICATION_ID`, else the WM_CLASS class; `process_id` comes from
   `_NET_WM_PID` when the client sets it. Application selectors match the GTK id
   and both WM_CLASS strings case-insensitively.

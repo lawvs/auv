@@ -1918,7 +1918,7 @@ fn click_window_selector(application_id: &str, title: Option<&str>) -> auv_drive
 
   let title = title.filter(|value| !value.trim().is_empty()).map(|title| TextMatcher::Contains(title.to_string()));
   WindowSelector {
-    app: Some(App::bundle_id(application_id)),
+    app: Some(App::id(application_id)),
     main_visible: title.is_none(),
     title,
   }
@@ -2078,9 +2078,7 @@ fn local_keyboard_target(
 ) -> Result<auv_driver::InputTarget, crate::InvokeFailure> {
   let target = match input.target.as_ref() {
     None => auv_driver::InputTarget::Foreground,
-    Some(crate::ExecutionTarget::Application { id }) => auv_driver::InputTarget::Application {
-      bundle_id: id.clone(),
-    },
+    Some(crate::ExecutionTarget::Application { id }) => auv_driver::InputTarget::Application { id: id.clone() },
     Some(crate::ExecutionTarget::Window { id }) => {
       auv_driver::InputTarget::Window(session.window().list()?.into_iter().find(|window| window.reference.id == *id).ok_or_else(|| {
         auv_driver::DriverError::NotFound {

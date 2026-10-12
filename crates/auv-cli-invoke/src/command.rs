@@ -360,25 +360,20 @@ impl TargetPolicy {
   }
 
   pub fn help(self) -> &'static str {
-    // TODO(application-id-rename): only `RequiredApplication` (app.activate,
-    // input.focusText) spells the neutral `app:<application-id>` so far. The
-    // other variants keep `app:<bundle-id>` until the owner-approved slice that
-    // renames `Window.app_bundle_id`, `InputTarget::Application { bundle_id }`,
-    // and `App::bundle_id` to application ids.
     match self {
       Self::Forbidden => "Target forbidden; this command operates without target selection.",
-      Self::OptionalApplication => "Optional app:<bundle-id> (bare ids accepted); window and display targets are unsupported.",
+      Self::OptionalApplication => "Optional app:<application-id> (bare ids accepted); window and display targets are unsupported.",
       Self::RequiredApplication => {
         "Required app:<application-id> (the id window.list reports: a bundle id on macOS, a process image name on Windows; bare ids accepted); window and display targets are unsupported."
       }
       Self::OptionalKeyboard => {
-        "Optional app:<bundle-id> (bare ids accepted) or window:<window-id>. Default foreground-preferred activates the app; a window target also requires exact window focus. Background policies do not activate or fall back to foreground. Does not establish text-control focus. Without target, uses current foreground focus. Display targets are unsupported."
+        "Optional app:<application-id> (bare ids accepted) or window:<window-id>. Default foreground-preferred activates the app; a window target also requires exact window focus. Background policies do not activate or fall back to foreground. Does not establish text-control focus. Without target, uses current foreground focus. Display targets are unsupported."
       }
       Self::OptionalPoint => {
-        "Optional app:<bundle-id>, window:<window-id>, or display:<display-id>; coordinate basis defaults from target. Bare values select an application."
+        "Optional app:<application-id>, window:<window-id>, or display:<display-id>; coordinate basis defaults from target. Bare values select an application."
       }
       Self::RequiredWindow => {
-        "Required app:<bundle-id> (its main visible window; bare ids accepted) or window:<window-id>; coordinates are window-local. Display targets are unsupported."
+        "Required app:<application-id> (its main visible window; bare ids accepted) or window:<window-id>; coordinates are window-local. Display targets are unsupported."
       }
     }
   }

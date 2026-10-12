@@ -313,7 +313,7 @@ pub struct WindowApi<'a> {
 impl WindowApi<'_> {
   /// Lists EWMH client windows, top-most first, including hidden ones.
   ///
-  /// `app_bundle_id` carries `_GTK_APPLICATION_ID`, else the WM_CLASS class;
+  /// `application_id` carries `_GTK_APPLICATION_ID`, else the WM_CLASS class;
   /// `app_name` carries the WM_CLASS class. Frames include WM decorations.
   pub fn list(&self) -> DriverResult<Vec<Window>> {
     Ok(self.session.lock_windows()?.clients()?.into_iter().map(|client| client.window).collect())
@@ -321,7 +321,7 @@ impl WindowApi<'_> {
 
   /// Resolves one visible window with the shared selector rules.
   ///
-  /// App bundle selectors match `_GTK_APPLICATION_ID` and both WM_CLASS
+  /// Application id selectors match `_GTK_APPLICATION_ID` and both WM_CLASS
   /// strings case-insensitively; `frontmost` selects the active window's app.
   pub fn resolve(&self, selector: WindowSelector) -> DriverResult<Window> {
     let ewmh = self.session.lock_windows()?;
@@ -402,7 +402,7 @@ impl WindowApi<'_> {
     let ewmh = self.session.lock_windows()?;
     let client = match target {
       InputTarget::Foreground => return Ok(None),
-      InputTarget::Application { bundle_id } => application_window(&ewmh.clients()?, bundle_id, ewmh.active_window()?)?.clone(),
+      InputTarget::Application { id } => application_window(&ewmh.clients()?, id, ewmh.active_window()?)?.clone(),
       InputTarget::Window(window) => {
         let xid = parse_window_id(&window.reference.id)?;
         // Only WM-managed clients are recipients; an XID can be reused.
@@ -511,11 +511,10 @@ fn client_window(xid: u32, facts: WindowFacts) -> ClientWindow {
       reference: WindowRef { id: window_id(xid) },
       title: decode_title(facts.net_wm_name.as_deref(), facts.wm_name.as_deref()),
       app_name: class.clone(),
-      // NOTICE(x11-app-id): X11 has no bundle identifier. Like the AT-SPI
-      // precedent in `auv-driver-linux/src/atspi.rs`, the shared
-      // app_bundle_id carries the desktop application id until a
-      // platform-neutral app identity field is approved in auv-driver.
-      app_bundle_id: gtk_application_id.clone().or(class),
+      // NOTICE(x11-app-id): X11 has no single application identity. The
+      // application id is the GTK desktop application id when the client sets
+      // one, else the WM_CLASS class.
+      application_id: gtk_application_id.clone().or(class),
       process_id: facts.process_id,
       frame: outer_frame(facts.client_origin, facts.client_size, facts.frame_extents),
       coordinate_space: CoordinateSpace::Screen,
@@ -599,7 +598,7 @@ fn matches_app(client: &ClientWindow, selector: &AppSelector, frontmost: Option<
   if selector.process_id.is_some_and(|pid| client.window.process_id != Some(pid)) {
     return false;
   }
-  if selector.bundle.as_ref().is_some_and(|bundle| !client.is_application(bundle)) {
+  if selector.id.as_ref().is_some_and(|matcher| !client.is_application(matcher)) {
     return false;
   }
   selector.name.as_ref().is_none_or(|name| client.window.app_name.as_deref().is_some_and(|value| matches_text(value, name)))
@@ -615,17 +614,17 @@ fn matches_text(value: &str, matcher: &TextMatcher) -> bool {
 /// Selects the keyboard recipient for an application target: the active
 /// window when it belongs to the application, else its top-most main window.
 /// Windows from several processes require an explicit window target.
-fn application_window<'a>(clients: &'a [ClientWindow], bundle_id: &str, active: Option<u32>) -> DriverResult<&'a ClientWindow> {
-  let matcher = TextMatcher::Exact(bundle_id.to_string());
+fn application_window<'a>(clients: &'a [ClientWindow], application_id: &str, active: Option<u32>) -> DriverResult<&'a ClientWindow> {
+  let matcher = TextMatcher::Exact(application_id.to_string());
   let candidates: Vec<&ClientWindow> = clients.iter().filter(|client| client.window.is_visible && client.is_application(&matcher)).collect();
   let Some(first) = candidates.first() else {
     return Err(DriverError::NotFound {
-      target: format!("application:{bundle_id}"),
+      target: format!("application:{application_id}"),
     });
   };
   if candidates.iter().any(|client| client.instance_key() != first.instance_key()) {
     return Err(invalid(format!(
-      "application {bundle_id:?} matched {} X11 windows across more than one process (or without _NET_WM_PID); select a window target",
+      "application {application_id:?} matched {} X11 windows across more than one process (or without _NET_WM_PID); select a window target",
       candidates.len()
     )));
   }

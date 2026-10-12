@@ -18,7 +18,10 @@ pub struct Window {
   pub reference: WindowRef,
   pub title: Option<String>,
   pub app_name: Option<String>,
-  pub app_bundle_id: Option<String>,
+  /// Platform application id: a bundle id on macOS, a desktop application id
+  /// on Linux (AT-SPI AccessibleId, or the GTK id / WM_CLASS class on X11).
+  /// Windows does not report one yet.
+  pub application_id: Option<String>,
   pub process_id: Option<u32>,
   pub frame: Rect,
   pub coordinate_space: CoordinateSpace,

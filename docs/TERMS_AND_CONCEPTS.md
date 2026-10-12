@@ -973,9 +973,16 @@ An application id is the opaque id that `window.list` reports for a window's
 application on the same platform. Its kind depends on the platform: a bundle id
 on macOS (`bundle_id`) and a process image name on Windows (`process_name`).
 Linux kinds are defined but not yet produced: `desktop_app_id` (the AT-SPI
-application id) on Wayland and `wm_class` on X11. Some help text and selector
-fields still say "bundle id"; renaming them to application id is a separate
-slice.
+application id) on Wayland and `wm_class` on X11.
+
+The same name carries the id on every surface: `Window.application_id`,
+`AppSelector.id` (`App::id`), `InputTarget::Application { id }`, and the
+`application_id` fields of the driver Protobuf `Window`, `WindowSelector` and
+`InputTarget` messages (`applicationId` in JavaScript). Linux drivers report the
+AT-SPI AccessibleId (Wayland) or the GTK application id, else the WM_CLASS
+class (X11). The Windows driver does not report `Window.application_id` yet;
+its process image name appears as the application name. See the
+[application id naming migration](ai/references/runtime/2026-10-12-application-id-naming-migration.md).
 
 What an application id names depends on the platform. The `window.*` commands match a bundle id
 on macOS, the AT-SPI `AccessibleId` on Linux, and the executable file name on Windows (for
@@ -1173,7 +1180,7 @@ elements that overlap multiple layout or backing surfaces.
 
 A window candidate is one possible window match returned by a window-listing
 operation. Candidates should include enough metadata for inspection and stable
-selection, such as window ref, native window id when available, owner bundle id,
+selection, such as window ref, native window id when available, owner application id,
 owner pid, title, bounds, display relationship, layer, area, visibility, and the
 reason it appears in the ordered list.
 
