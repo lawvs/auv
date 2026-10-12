@@ -133,16 +133,16 @@ fn selectors_match_app_identity_title_and_frontmost() {
     client(1, b"navigator\0Firefox\0", Some(10), "Mozilla Firefox"),
   ];
 
-  let firefox = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("firefox")), None).unwrap();
+  let firefox = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("firefox")), None, &[]).unwrap();
   assert_eq!(firefox.xid, 1);
-  let todo = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("editor")).title_contains("TODO"), None).unwrap();
+  let todo = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("editor")).title_contains("TODO"), None, &[]).unwrap();
   assert_eq!(todo.xid, 2);
   assert!(matches!(
-    resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("editor")), None),
+    resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("editor")), None, &[]),
     Err(DriverError::InvalidInput { .. })
   ));
   assert!(matches!(
-    resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("missing")), None),
+    resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("missing")), None, &[]),
     Err(DriverError::NotFound { .. })
   ));
 
@@ -151,15 +151,15 @@ fn selectors_match_app_identity_title_and_frontmost() {
     main_visible: true,
     ..WindowSelector::default().owned_by(App::bundle("editor"))
   };
-  assert_eq!(resolve_from(&clients, &main, None).unwrap().xid, 3);
-  assert_eq!(resolve_from(&clients, &main, Some(2)).unwrap().xid, 2);
+  assert_eq!(resolve_from(&clients, &main, None, &[]).unwrap().xid, 3);
+  assert_eq!(resolve_from(&clients, &main, Some(2), &[]).unwrap().xid, 2);
 
   let frontmost = WindowSelector {
     main_visible: true,
     ..WindowSelector::default().owned_by(App::frontmost())
   };
-  assert_eq!(resolve_from(&clients, &frontmost, Some(1)).unwrap().xid, 1);
-  assert!(resolve_from(&clients, &frontmost, None).is_err());
+  assert_eq!(resolve_from(&clients, &frontmost, Some(1), &[]).unwrap().xid, 1);
+  assert!(resolve_from(&clients, &frontmost, None, &[]).is_err());
 }
 
 #[test]
@@ -168,21 +168,48 @@ fn application_target_prefers_active_window_and_rejects_multiple_instances() {
     client(3, b"editor\0Editor\0", Some(30), "a"),
     client(2, b"editor\0Editor\0", Some(30), "b"),
   ];
-  assert_eq!(application_window(&clients, "Editor", None).unwrap().xid, 3);
-  assert_eq!(application_window(&clients, "editor", Some(2)).unwrap().xid, 2);
-  assert!(matches!(application_window(&clients, "missing", None), Err(DriverError::NotFound { .. })));
+  assert_eq!(application_window(&clients, "Editor", &[], None).unwrap().xid, 3);
+  assert_eq!(application_window(&clients, "editor", &[], Some(2)).unwrap().xid, 2);
+  assert!(matches!(application_window(&clients, "missing", &[], None), Err(DriverError::NotFound { .. })));
 
   let two_processes = vec![
     client(3, b"editor\0Editor\0", Some(30), "a"),
     client(2, b"editor\0Editor\0", Some(31), "b"),
   ];
-  assert!(matches!(application_window(&two_processes, "editor", Some(2)), Err(DriverError::InvalidInput { .. })));
+  assert!(matches!(application_window(&two_processes, "editor", &[], Some(2)), Err(DriverError::InvalidInput { .. })));
 
   // Without _NET_WM_PID, separate windows cannot be proven to share a process.
   let unknown = vec![
     client(3, b"editor\0Editor\0", None, "a"),
     client(2, b"editor\0Editor\0", None, "b"),
   ];
-  assert!(matches!(application_window(&unknown, "editor", None), Err(DriverError::InvalidInput { .. })));
-  assert_eq!(application_window(&unknown[..1], "editor", None).unwrap().xid, 3);
+  assert!(matches!(application_window(&unknown, "editor", &[], None), Err(DriverError::InvalidInput { .. })));
+  assert_eq!(application_window(&unknown[..1], "editor", &[], None).unwrap().xid, 3);
+}
+
+// ROOT CAUSE:
+//
+// If a model targeted an application by its desktop id (`gimp`) or a
+// macOS-style guess (`com.google.Chrome`), the X11 driver reported only
+// "application:… was not found": WM_CLASS is `gimp-2.10`/`Gimp-2.10`, and the
+// error did not say which ids exist. OSWorld episodes spent steps guessing.
+//
+// The fix also accepts the WM_CLASS names a desktop entry of that id declares,
+// and a miss lists the application ids of the visible windows.
+#[test]
+fn desktop_entry_aliases_match_and_a_miss_lists_visible_application_ids() {
+  let clients = vec![
+    client(3, b"gimp-2.10\0Gimp-2.10\0", Some(30), "GNU Image Manipulation Program"),
+    client(2, b"google-chrome\0Google-chrome\0", Some(20), "New Tab - Google Chrome"),
+  ];
+  let aliases = ["gimp-2.10".to_string()];
+  assert_eq!(application_window(&clients, "gimp", &aliases, None).unwrap().xid, 3);
+  assert!(matches!(application_window(&clients, "gimp", &[], None), Err(DriverError::NotFound { .. })));
+  let selector = WindowSelector::default().owned_by(App::bundle("gimp"));
+  assert_eq!(resolve_from(&clients, &selector, None, &aliases).unwrap().xid, 3);
+
+  let missing = application_window(&clients, "com.google.Chrome", &[], None).unwrap_err().to_string();
+  assert_eq!(missing, "application:com.google.Chrome (visible X11 application ids: Gimp-2.10, Google-chrome) was not found");
+  let missing = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("org.gimp.GIMP")), None, &[]).unwrap_err();
+  assert!(missing.to_string().contains("visible X11 application ids: Gimp-2.10, Google-chrome"), "{missing}");
 }

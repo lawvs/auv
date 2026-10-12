@@ -323,11 +323,16 @@ impl WindowApi<'_> {
   /// Resolves one visible window with the shared selector rules.
   ///
   /// App bundle selectors match `_GTK_APPLICATION_ID` and both WM_CLASS
-  /// strings case-insensitively; `frontmost` selects the active window's app.
+  /// strings case-insensitively, plus the WM_CLASS names a desktop entry of
+  /// that id declares; `frontmost` selects the active window's app.
   pub fn resolve(&self, selector: WindowSelector) -> DriverResult<Window> {
+    let aliases = match selector.app.as_ref().and_then(|app| app.bundle.as_ref()) {
+      Some(TextMatcher::Exact(id)) => crate::desktop::wm_aliases(id),
+      _ => Vec::new(),
+    };
     let ewmh = self.session.lock_windows()?;
     let clients = ewmh.clients()?;
-    resolve_from(&clients, &selector, ewmh.active_window()?).map(|client| client.window.clone())
+    resolve_from(&clients, &selector, ewmh.active_window()?, &aliases).map(|client| client.window.clone())
   }
 
   /// Maps a point relative to the window frame's top-left onto root pixels.
@@ -468,7 +473,10 @@ impl WindowApi<'_> {
     let ewmh = self.session.lock_windows()?;
     let client = match target {
       InputTarget::Foreground => return Ok(None),
-      InputTarget::Application { bundle_id } => application_window(&ewmh.clients()?, bundle_id, ewmh.active_window()?)?.clone(),
+      InputTarget::Application { bundle_id } => {
+        let aliases = crate::desktop::wm_aliases(bundle_id);
+        application_window(&ewmh.clients()?, bundle_id, &aliases, ewmh.active_window()?)?.clone()
+      }
       InputTarget::Window(window) => {
         let xid = parse_window_id(&window.reference.id)?;
         // Only WM-managed clients are recipients; an XID can be reused.
@@ -615,6 +623,12 @@ impl ClientWindow {
     })
   }
 
+  /// `is_application`, or one of the WM_CLASS `aliases` a desktop entry of
+  /// the requested id declares.
+  fn is_application_or_alias(&self, matcher: &TextMatcher, aliases: &[String]) -> bool {
+    self.is_application(matcher) || self.application_ids().any(|id| aliases.iter().any(|alias| id.eq_ignore_ascii_case(alias)))
+  }
+
   /// Process identity used to tell application instances apart.
   fn instance_key(&self) -> Result<u32, u32> {
     self.window.process_id.ok_or(self.xid)
@@ -625,12 +639,17 @@ impl ClientWindow {
 // each keep a private copy of these selector rules. X11 differs only in
 // case-insensitive application identities; consolidating into
 // auv-driver-common is a candidate follow-up slice, not part of this one.
-fn resolve_from<'a>(clients: &'a [ClientWindow], selector: &WindowSelector, active: Option<u32>) -> DriverResult<&'a ClientWindow> {
+fn resolve_from<'a>(
+  clients: &'a [ClientWindow],
+  selector: &WindowSelector,
+  active: Option<u32>,
+  aliases: &[String],
+) -> DriverResult<&'a ClientWindow> {
   let frontmost = active.and_then(|xid| clients.iter().find(|client| client.xid == xid)).map(ClientWindow::instance_key);
   let mut matches: Vec<&ClientWindow> = clients
     .iter()
     .filter(|client| client.window.is_visible)
-    .filter(|client| selector.app.as_ref().is_none_or(|app| matches_app(client, app, frontmost)))
+    .filter(|client| selector.app.as_ref().is_none_or(|app| matches_app(client, app, frontmost, aliases)))
     .filter(|client| {
       selector.title.as_ref().is_none_or(|title| client.window.title.as_deref().is_some_and(|value| matches_text(value, title)))
     })
@@ -651,21 +670,24 @@ fn resolve_from<'a>(clients: &'a [ClientWindow], selector: &WindowSelector, acti
   }
   match matches.as_slice() {
     [client] => Ok(client),
-    [] => Err(DriverError::NotFound {
-      target: "window selector".into(),
-    }),
+    [] => match selector.app.as_ref().and_then(|app| app.bundle.as_ref()) {
+      Some(TextMatcher::Exact(id) | TextMatcher::Contains(id)) => Err(missing_application(&format!("window of application:{id}"), clients)),
+      None => Err(DriverError::NotFound {
+        target: "window selector".into(),
+      }),
+    },
     _ => Err(invalid(format!("window selector was ambiguous: {} windows matched", matches.len()))),
   }
 }
 
-fn matches_app(client: &ClientWindow, selector: &AppSelector, frontmost: Option<Result<u32, u32>>) -> bool {
+fn matches_app(client: &ClientWindow, selector: &AppSelector, frontmost: Option<Result<u32, u32>>, aliases: &[String]) -> bool {
   if selector.frontmost && frontmost != Some(client.instance_key()) {
     return false;
   }
   if selector.process_id.is_some_and(|pid| client.window.process_id != Some(pid)) {
     return false;
   }
-  if selector.bundle.as_ref().is_some_and(|bundle| !client.is_application(bundle)) {
+  if selector.bundle.as_ref().is_some_and(|bundle| !client.is_application_or_alias(bundle, aliases)) {
     return false;
   }
   selector.name.as_ref().is_none_or(|name| client.window.app_name.as_deref().is_some_and(|value| matches_text(value, name)))
@@ -681,13 +703,17 @@ fn matches_text(value: &str, matcher: &TextMatcher) -> bool {
 /// Selects the keyboard recipient for an application target: the active
 /// window when it belongs to the application, else its top-most main window.
 /// Windows from several processes require an explicit window target.
-fn application_window<'a>(clients: &'a [ClientWindow], bundle_id: &str, active: Option<u32>) -> DriverResult<&'a ClientWindow> {
+fn application_window<'a>(
+  clients: &'a [ClientWindow],
+  bundle_id: &str,
+  aliases: &[String],
+  active: Option<u32>,
+) -> DriverResult<&'a ClientWindow> {
   let matcher = TextMatcher::Exact(bundle_id.to_string());
-  let candidates: Vec<&ClientWindow> = clients.iter().filter(|client| client.window.is_visible && client.is_application(&matcher)).collect();
+  let candidates: Vec<&ClientWindow> =
+    clients.iter().filter(|client| client.window.is_visible && client.is_application_or_alias(&matcher, aliases)).collect();
   let Some(first) = candidates.first() else {
-    return Err(DriverError::NotFound {
-      target: format!("application:{bundle_id}"),
-    });
+    return Err(missing_application(&format!("application:{bundle_id}"), clients));
   };
   if candidates.iter().any(|client| client.instance_key() != first.instance_key()) {
     return Err(invalid(format!(
@@ -699,6 +725,24 @@ fn application_window<'a>(clients: &'a [ClientWindow], bundle_id: &str, active: 
     return Ok(client);
   }
   Ok(candidates.iter().find(|client| client.window.is_main).unwrap_or(first))
+}
+
+/// A `NotFound` for an application that names the ids visible windows do
+/// carry, so a caller that guessed (`com.google.Chrome`) can retry with the
+/// X11 one (`google-chrome`) without another `window.list` round trip.
+// NOTICE(x11-app-id-hint): `DriverError::NotFound` has only a target, so the
+// hint rides in it ("application:x (visible application ids: …) was not
+// found"). Move it to a structured recovery field if NotFound gains one.
+fn missing_application(target: &str, clients: &[ClientWindow]) -> DriverError {
+  let mut ids: Vec<&str> =
+    clients.iter().filter(|client| client.window.is_visible).filter_map(|client| client.application_ids().next()).collect();
+  ids.sort_unstable_by_key(|id| id.to_lowercase());
+  ids.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+  let target = match ids.as_slice() {
+    [] => format!("{target} (no visible X11 application windows)"),
+    ids => format!("{target} (visible X11 application ids: {})", ids.join(", ")),
+  };
+  DriverError::NotFound { target }
 }
 
 #[cfg(test)]

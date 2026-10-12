@@ -13,6 +13,8 @@ mod capture;
 #[cfg(target_os = "linux")]
 mod clipboard;
 #[cfg(target_os = "linux")]
+mod desktop;
+#[cfg(target_os = "linux")]
 mod input;
 #[cfg(target_os = "linux")]
 mod session;
