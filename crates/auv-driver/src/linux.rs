@@ -297,20 +297,21 @@ pub struct WindowApi<'a> {
   session: &'a LocalDriverSession,
 }
 
-// TODO(x11-window-api): X11 window observation/targeted delivery remains
-// outside this integration slice; add it only with an owner-approved contract.
+// TODO(x11-window-api): X11 implements EWMH list/resolve, point mapping, and
+// activated foreground wheel delivery. Window capture, text search, click, and
+// drag remain unsupported; add them only with an owner-approved slice.
 impl WindowApi<'_> {
   pub fn list(&self) -> DriverResult<Vec<Window>> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().list(),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.list")),
+      LocalDriverSession::LinuxX11(session) => session.window().list(),
     }
   }
 
   pub fn resolve(&self, selector: WindowSelector) -> DriverResult<Window> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().resolve(selector),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.resolve")),
+      LocalDriverSession::LinuxX11(session) => session.window().resolve(selector),
     }
   }
 
@@ -346,7 +347,7 @@ impl WindowApi<'_> {
   pub fn to_screen_point(&self, window: &Window, point: WindowPoint) -> DriverResult<ScreenPoint> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().to_screen_point(window, point),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.to_screen_point")),
+      LocalDriverSession::LinuxX11(session) => session.window().to_screen_point(window, point),
     }
   }
 
@@ -354,7 +355,7 @@ impl WindowApi<'_> {
   pub fn to_window_point(&self, window: &Window, point: ScreenPoint) -> DriverResult<WindowPoint> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().to_window_point(window, point),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.to_window_point")),
+      LocalDriverSession::LinuxX11(session) => session.window().to_window_point(window, point),
     }
   }
 }
@@ -370,7 +371,17 @@ impl WindowInput for WindowApi<'_> {
   fn scroll(&self, window: &Window, point: WindowPoint, scroll: Scroll, options: ScrollOptions) -> DriverResult<InputActionResult> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().scroll(window, point, scroll, options),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.scroll")),
+      LocalDriverSession::LinuxX11(session) => session.window().scroll(window, point, scroll, options),
+    }
+  }
+
+  fn scroll_quantum(&self) -> f64 {
+    match self.session {
+      // REVIEW(linux-scroll-quantum): the Wayland session defines its own
+      // quantum that this facade has never forwarded; keeping the trait
+      // default here preserves existing Wayland behavior.
+      LocalDriverSession::Linux(_) => 1.0,
+      LocalDriverSession::LinuxX11(session) => session.window().scroll_quantum(),
     }
   }
 
@@ -519,7 +530,7 @@ impl LocalDriverSession {
       Self::LinuxX11(_) => LinuxDriverDescriptor {
         id: "linux.x11",
         platform: auv_driver_common::PlatformKind::Linux,
-        description: "Legacy X11 display capture and foreground XTEST input; not recommended for new deployments.",
+        description: "Legacy X11 display capture, EWMH window observation, and foreground XTEST input; not recommended for new deployments.",
       },
     }
   }

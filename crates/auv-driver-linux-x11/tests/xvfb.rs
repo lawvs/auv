@@ -2,8 +2,9 @@
 #![cfg(target_os = "linux")]
 
 use auv_driver_common::{
-  CaptureOptions, Click, ClickModifiers, DisturbanceLevel, Driver, InputDeliveryPath, InputPolicy, InputTarget, KeyPressOptions,
-  MoveMouseRequest, PasteTextOptions, Point, Rect, Scroll, TextSubmit, TypeTextOptions, input::MouseButton,
+  App, CaptureOptions, Click, ClickModifiers, DisturbanceLevel, Driver, DriverError, InputDeliveryPath, InputPolicy, InputTarget,
+  KeyPressOptions, KeyboardInput, MoveMouseRequest, PasteTextOptions, Point, PressKeysOptions, Rect, ScreenPoint, Scroll,
+  ScrollOptions, TextSubmit, TypeTextOptions, Window, WindowPoint, WindowSelector, input::MouseButton,
 };
 use auv_driver_linux_x11::X11Driver;
 use std::{
@@ -356,4 +357,181 @@ fn clipboard_paste_delivers_text_and_restores_the_previous_clipboard() {
   let error = input.paste_text(submit("ignored")).unwrap_err();
   assert!(error.to_string().contains("no paste consumer"), "{error}");
   assert_eq!(owner(), x11rb::NONE);
+}
+
+/// One managed Tk window whose Entry reports submitted text and whose Listbox
+/// reports its scroll position. `pid` publishes `_NET_WM_PID` through xprop
+/// because Tk does not set it.
+fn spawn_managed_fixture(directory: &std::path::Path, class: &str, title: &str, geometry: &str, pid: bool) -> Child {
+  Command::new("python3")
+    .arg("-c")
+    .arg(
+      r#"
+import os, pathlib, subprocess, sys, tkinter as tk
+p, class_name, title, geometry, pid = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] == '1'
+root = tk.Tk(className=class_name)
+root.title(title)
+root.geometry(geometry)
+entry = tk.Entry(root)
+entry.pack(fill=tk.X)
+listbox = tk.Listbox(root)
+listbox.pack(fill=tk.BOTH, expand=True)
+for i in range(200):
+    listbox.insert(tk.END, 'item '+str(i))
+def submit(event):
+    (p/(class_name+'.text')).write_text(entry.get())
+entry.bind('<Return>', submit)
+def record_scroll(event):
+    root.after(50, lambda: (p/(class_name+'.scroll')).write_text(str(listbox.yview()[0])))
+listbox.bind('<Button-5>', record_scroll, add='+')
+entry.focus_set()
+root.update()
+if pid:
+    # The WM-managed client is Tk's wrapper, the parent of the root widget's
+    # window; `wm frame` would name the window manager's decoration frame.
+    tree = subprocess.run(['xwininfo', '-tree', '-id', str(root.winfo_id())], check=True, capture_output=True, text=True).stdout
+    wrapper = next(line.split()[3] for line in tree.splitlines() if line.strip().startswith('Parent window id:'))
+    subprocess.run(['xprop', '-id', wrapper, '-f', '_NET_WM_PID', '32c', '-set', '_NET_WM_PID', str(os.getpid())], check=True)
+(p/(class_name+'.ready')).touch()
+root.mainloop()
+"#,
+    )
+    .arg(directory)
+    .args([class, title, geometry, if pid { "1" } else { "0" }])
+    .spawn()
+    .unwrap()
+}
+
+fn read_file(directory: &std::path::Path, name: &str) -> Option<String> {
+  fs::read_to_string(directory.join(name)).ok()
+}
+
+#[test]
+#[ignore = "requires isolated Xvfb, an EWMH window manager (openbox), xprop, and python3-tk; manipulates the selected desktop"]
+fn ewmh_windows_resolve_activate_and_receive_targeted_input() {
+  let directory = std::env::temp_dir().join(format!("auv-x11-ewmh-test-{}", std::process::id()));
+  fs::create_dir(&directory).unwrap();
+  let alpha = spawn_managed_fixture(&directory, "AuvAlpha", "AUV Alpha", "400x300+20+20", true);
+  let alpha_pid = alpha.id();
+  let _alpha = Fixture {
+    child: alpha,
+    directory: directory.clone(),
+  };
+  wait_for(|| directory.join("AuvAlpha.ready").exists());
+  // Beta maps last, overlaps Alpha's lower-right corner, and becomes active.
+  let beta = spawn_managed_fixture(&directory, "AuvBeta", "AUV Beta", "400x300+300+200", false);
+  let _beta = Fixture {
+    child: beta,
+    directory: directory.join("unused"),
+  };
+  wait_for(|| directory.join("AuvBeta.ready").exists());
+
+  let session = X11Driver.open_local().unwrap();
+  let windows = session.window();
+  let find = |title: &str| -> Option<Window> { windows.list().unwrap().into_iter().find(|window| window.title.as_deref() == Some(title)) };
+  wait_for(|| find("AUV Alpha").is_some() && find("AUV Beta").is_some());
+
+  // window.list: EWMH identity, owner, and decorated frame.
+  let alpha_window = find("AUV Alpha").unwrap();
+  assert!(alpha_window.reference.id.starts_with("x11:0x"), "{alpha_window:?}");
+  // Tk derives WM_CLASS ("auvAlpha", "Auvalpha") from className.
+  assert_eq!(alpha_window.app_name.as_deref(), Some("Auvalpha"));
+  assert_eq!(alpha_window.app_bundle_id.as_deref(), Some("Auvalpha"));
+  assert_eq!(alpha_window.process_id, Some(alpha_pid));
+  assert!(alpha_window.is_visible && alpha_window.is_main);
+  assert!(alpha_window.frame.size.width >= 400.0 && alpha_window.frame.size.height >= 300.0, "{alpha_window:?}");
+  let beta_window = find("AUV Beta").unwrap();
+  assert_eq!(beta_window.process_id, None);
+  assert_eq!(windows.list().unwrap().first().map(|window| window.reference.clone()), Some(beta_window.reference.clone()));
+
+  // window.resolve: case-insensitive application ids, titles, frontmost.
+  let resolved = windows.resolve(WindowSelector::default().owned_by(App::bundle("AuvAlpha"))).unwrap();
+  assert_eq!(resolved.reference, alpha_window.reference);
+  let resolved = windows.resolve(WindowSelector::default().title_contains("beta")).unwrap();
+  assert_eq!(resolved.reference, beta_window.reference);
+  let frontmost = WindowSelector {
+    main_visible: true,
+    ..WindowSelector::default().owned_by(App::frontmost())
+  };
+  assert_eq!(windows.resolve(frontmost.clone()).unwrap().reference, beta_window.reference);
+  assert!(matches!(windows.resolve(WindowSelector::default().owned_by(App::bundle("missing"))), Err(DriverError::NotFound { .. })));
+
+  let window_point = WindowPoint::new(5.0, 7.0);
+  let screen = windows.to_screen_point(&alpha_window, window_point).unwrap();
+  assert_eq!(screen, ScreenPoint::new(alpha_window.frame.origin.x + 5.0, alpha_window.frame.origin.y + 7.0));
+  assert_eq!(windows.to_window_point(&alpha_window, screen).unwrap(), window_point);
+
+  let input = session.input();
+  let text = |text: &str| KeyboardInput::TypeText {
+    text: text.into(),
+    options: TypeTextOptions {
+      policy: InputPolicy::ForegroundPreferred,
+      submit: TextSubmit::Return,
+      ..Default::default()
+    },
+  };
+
+  // Validation and dry-run bind the recipient without activating it.
+  let missing = InputTarget::Application {
+    bundle_id: "missing".into(),
+  };
+  assert!(matches!(input.input_keyboard(&missing, vec![text("lost")], true).unwrap_err().cause, DriverError::NotFound { .. }));
+  let alpha_app = InputTarget::Application {
+    bundle_id: "auvalpha".into(),
+  };
+  assert!(input.input_keyboard(&alpha_app, vec![text("dry")], true).unwrap().is_none());
+  let background = KeyboardInput::PressKeys {
+    options: PressKeysOptions {
+      keys: vec!["a".into()],
+      ..Default::default()
+    },
+    policy: InputPolicy::BackgroundOnly,
+  };
+  assert!(matches!(input.input_keyboard(&alpha_app, vec![background], false).unwrap_err().cause, DriverError::Unsupported { .. }));
+  assert_eq!(windows.resolve(frontmost.clone()).unwrap().reference, beta_window.reference);
+
+  // Application target: activate Alpha, confirm focus, deliver foreground XTEST.
+  let results = input.input_keyboard(&alpha_app, vec![text("alpha via x11")], false).unwrap().unwrap();
+  wait_for(|| read_file(&directory, "AuvAlpha.text").as_deref() == Some("alpha via x11"));
+  assert_eq!(windows.resolve(frontmost.clone()).unwrap().reference, alpha_window.reference);
+  let result = &results[0];
+  assert_eq!(result.selected_path, InputDeliveryPath::ForegroundSystemEvents);
+  assert_eq!(result.attempts[0].path, InputDeliveryPath::WindowTargetedKeyboard);
+  assert!(result.fallback_reason().is_some_and(|reason| reason.contains("X11 has no window-bound keyboard delivery")), "{result:?}");
+  assert!(result.fallback_reason().is_some_and(|reason| reason.contains(&format!("(pid {alpha_pid})"))), "{result:?}");
+  assert_eq!(result.focus_disturbance, DisturbanceLevel::Foreground);
+  assert!(!result.verified);
+  assert!(read_file(&directory, "AuvBeta.text").is_none());
+
+  // Window target: the exact observed window, including one without a pid.
+  let results = input.input_keyboard(&InputTarget::Window(beta_window.clone()), vec![text("beta via x11")], false).unwrap().unwrap();
+  wait_for(|| read_file(&directory, "AuvBeta.text").as_deref() == Some("beta via x11"));
+  assert!(results[0].fallback_reason().is_some_and(|reason| reason.contains("(pid unknown)")));
+  assert_eq!(read_file(&directory, "AuvAlpha.text").as_deref(), Some("alpha via x11"));
+
+  // A stale owner is rejected before activation or delivery.
+  let stale = Window {
+    process_id: Some(alpha_pid + 100_000),
+    ..alpha_window.clone()
+  };
+  assert!(matches!(
+    input.input_keyboard(&InputTarget::Window(stale), vec![text("stale")], false).unwrap_err().cause,
+    DriverError::InvalidInput { .. }
+  ));
+  assert_eq!(windows.resolve(frontmost).unwrap().reference, beta_window.reference);
+
+  // Window-relative scroll: Beta covers this point of Alpha's listbox, so the
+  // wheel only reaches Alpha after activation raises it.
+  let alpha_window = find("AUV Alpha").unwrap();
+  let point = WindowPoint::new(alpha_window.frame.size.width - 40.0, alpha_window.frame.size.height - 40.0);
+  let covered = windows.to_screen_point(&alpha_window, point).unwrap().point();
+  assert!(beta_window.frame.origin.x < covered.x && beta_window.frame.origin.y < covered.y, "{covered:?} {beta_window:?}");
+  let result = windows.scroll(&alpha_window, point, Scroll::new(0.0, 360.0), ScrollOptions::default()).unwrap();
+  wait_for(|| read_file(&directory, "AuvAlpha.scroll").and_then(|value| value.parse::<f64>().ok()).is_some_and(|value| value > 0.0));
+  assert!(read_file(&directory, "AuvBeta.scroll").is_none());
+  assert_eq!(result.attempts[0].path, InputDeliveryPath::WindowTargetedWheel);
+  assert!(result.fallback_reason().is_some_and(|reason| reason.contains("X11 has no window-bound wheel delivery")), "{result:?}");
+  assert_eq!(result.focus_disturbance, DisturbanceLevel::Foreground);
+  assert_eq!(input.current_position().unwrap(), Point::new(covered.x.round(), covered.y.round()));
+  assert!(windows.scroll(&alpha_window, WindowPoint::new(-1.0, 0.0), Scroll::new(0.0, 120.0), ScrollOptions::default()).is_err());
 }

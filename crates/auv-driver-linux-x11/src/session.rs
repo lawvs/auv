@@ -15,6 +15,7 @@ pub struct X11DriverSession {
   pub(crate) wheel_remainder: Arc<Mutex<(f64, f64)>>,
   /// CLIPBOARD owner, opened on first clipboard use and shared by clones.
   pub(crate) clipboard: Arc<Mutex<Option<crate::clipboard::Owner>>>,
+  windows: Arc<Mutex<crate::window::Ewmh>>,
   environment: Environment,
 }
 
@@ -76,10 +77,14 @@ pub(crate) fn open() -> DriverResult<X11DriverSession> {
     ..Settings::default()
   })
   .map_err(backend)?;
+  // EWMH reads and activation use a separate connection to the same display
+  // so property queries never interleave with Enigo's XTEST requests.
+  let windows = crate::window::Ewmh::connect(&environment.display)?;
   Ok(X11DriverSession {
     input: Arc::new(Mutex::new(input)),
     wheel_remainder: Arc::new(Mutex::new((0.0, 0.0))),
     clipboard: Arc::new(Mutex::new(None)),
+    windows: Arc::new(Mutex::new(windows)),
     environment,
   })
 }
@@ -104,6 +109,11 @@ impl X11DriverSession {
     &self.environment.display
   }
 
+  /// Observes EWMH client windows and maps window-relative wheel input.
+  pub fn window(&self) -> crate::WindowApi<'_> {
+    crate::WindowApi { session: self }
+  }
+
   pub(crate) fn check_environment(&self) -> DriverResult<()> {
     if environment()? != self.environment {
       return Err(invalid("DISPLAY/XAUTHORITY changed after opening the X11 session"));
@@ -114,6 +124,11 @@ impl X11DriverSession {
   pub(crate) fn lock_input(&self) -> DriverResult<MutexGuard<'_, Enigo>> {
     self.check_environment()?;
     self.input.lock().map_err(|_| backend("X11 input mutex poisoned; open a new session"))
+  }
+
+  pub(crate) fn lock_windows(&self) -> DriverResult<MutexGuard<'_, crate::window::Ewmh>> {
+    self.check_environment()?;
+    self.windows.lock().map_err(|_| backend("X11 window mutex poisoned; open a new session"))
   }
 }
 

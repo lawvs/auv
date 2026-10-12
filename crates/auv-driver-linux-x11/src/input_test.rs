@@ -333,30 +333,56 @@ fn restore_failure_is_an_error_even_after_delivery() {
 }
 
 #[test]
-fn keyboard_batch_requires_foreground_target_and_policy() {
-  let input = KeyboardInput::PressKeys {
+fn targeted_keyboard_batch_accepts_only_foreground_preferred_policy() {
+  let press = |policy| KeyboardInput::PressKeys {
     options: PressKeysOptions {
       keys: vec!["f2".into()],
       ..Default::default()
     },
-    policy: InputPolicy::ForegroundPreferred,
+    policy,
   };
-  let error = validate_keyboard_batch(
-    &InputTarget::Application {
-      bundle_id: "fixture".into(),
-    },
-    std::slice::from_ref(&input),
-  )
-  .expect_err("targeted input must be rejected");
-  assert!(matches!(error.cause, DriverError::Unsupported { .. }));
+  let application = InputTarget::Application {
+    bundle_id: "fixture".into(),
+  };
+  // The X11 exception activates the recipient and delivers foreground XTEST,
+  // so a targeted foreground-preferred batch validates.
+  assert_eq!(validate_keyboard_batch(&application, &[press(InputPolicy::ForegroundPreferred)]).unwrap().len(), 1);
 
-  let background = KeyboardInput::PressKeys {
-    options: PressKeysOptions {
-      keys: vec!["f2".into()],
-      ..Default::default()
-    },
-    policy: InputPolicy::BackgroundPreferred,
-  };
-  let error = validate_keyboard_batch(&InputTarget::Foreground, &[background]).expect_err("background policy must be rejected");
+  for policy in [
+    InputPolicy::BackgroundPreferred,
+    InputPolicy::BackgroundOnly,
+  ] {
+    let error = validate_keyboard_batch(&application, &[press(InputPolicy::ForegroundPreferred), press(policy)])
+      .expect_err("background policy has no X11 route");
+    assert_eq!(error.progress.action_index, 1);
+    assert!(matches!(
+      error.cause,
+      DriverError::Unsupported {
+        operation: "X11 background keyboard input"
+      }
+    ));
+  }
+
+  let error = validate_keyboard_batch(&InputTarget::Foreground, &[press(InputPolicy::BackgroundPreferred)])
+    .expect_err("untargeted background policy must be rejected");
   assert!(matches!(error.cause, DriverError::InvalidInput { .. }));
+}
+
+#[test]
+fn targeted_keyboard_result_reports_the_foreground_fallback() {
+  let mut action = delivered(false);
+  foreground_fallback(
+    &mut action,
+    &crate::window::Recipient {
+      xid: 0x1a00007,
+      process_id: Some(42),
+    },
+  );
+  assert_eq!(action.selected_path, InputDeliveryPath::ForegroundSystemEvents);
+  assert_eq!(action.attempts[0].path, InputDeliveryPath::WindowTargetedKeyboard);
+  assert!(!action.attempts[0].succeeded);
+  assert!(action.fallback_reason().is_some_and(|reason| reason.contains("x11:0x1a00007 (pid 42)")));
+  assert_eq!(action.focus_disturbance, DisturbanceLevel::Foreground);
+  assert!(!action.verified);
+  assert!(action.validate().is_ok());
 }
