@@ -375,8 +375,49 @@ fn clipboard_paste_delivers_text_and_restores_the_previous_clipboard() {
   let error = input.paste_text(submit("mirrored")).unwrap_err();
   assert_eq!(String::from_utf8(mirror.join().unwrap()).unwrap(), "mirrored");
   assert!(error.to_string().contains("did not request CLIPBOARD"), "{error}");
+  assert!(error.to_string().contains("only other clients read it"), "{error}");
   assert_eq!(owner(), x11rb::NONE);
   assert!(!text_file.exists());
+
+  // 7. ROOT CAUSE: a just-started Chrome in a loaded OSWorld VM asked for
+  // TARGETS at once but for the text more than a second later. The paste
+  // timed out after one second and restored the clipboard, so nothing was
+  // pasted. A focused application that has started now gets five seconds.
+  // This thread is that application: it focuses its own window, asks for
+  // TARGETS at once and for the text two seconds later.
+  let (ready, focused) = std::sync::mpsc::channel();
+  let slow = std::thread::spawn(move || {
+    use x11rb::protocol::{Event, xproto::InputFocus};
+    let (app, screen) = x11rb::connect(None).unwrap();
+    let root = app.setup().roots[screen].root;
+    let atom = |name: &[u8]| app.intern_atom(false, name).unwrap().reply().unwrap().atom;
+    let (targets, utf8, property) = (atom(b"TARGETS"), atom(b"UTF8_STRING"), atom(b"_AUV_TEST_PASTE"));
+    let window = app.generate_id().unwrap();
+    app
+      .create_window(x11rb::COPY_DEPTH_FROM_PARENT, window, root, 0, 0, 10, 10, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new())
+      .unwrap();
+    app.map_window(window).unwrap();
+    app.flush().unwrap();
+    wait_for(|| app.get_window_attributes(window).unwrap().reply().unwrap().map_state == x11rb::protocol::xproto::MapState::VIEWABLE);
+    app.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME).unwrap();
+    wait_for(|| app.get_input_focus().unwrap().reply().unwrap().focus == window);
+    ready.send(()).unwrap();
+    wait_for(|| app.get_selection_owner(clipboard).unwrap().reply().unwrap().owner != x11rb::NONE);
+    let convert = |target| {
+      app.convert_selection(window, clipboard, target, property, x11rb::CURRENT_TIME).unwrap();
+      app.flush().unwrap();
+      while !matches!(app.wait_for_event().unwrap(), Event::SelectionNotify(_)) {}
+      app.get_property(true, window, property, x11rb::protocol::xproto::AtomEnum::ANY, 0, 1024).unwrap().reply().unwrap().value
+    };
+    convert(targets);
+    std::thread::sleep(Duration::from_secs(2));
+    convert(utf8)
+  });
+  focused.recv().unwrap();
+  let result = input.paste_text(submit("slow")).unwrap();
+  assert_eq!(String::from_utf8(slow.join().unwrap()).unwrap(), "slow");
+  assert_eq!(result.selected_path, InputDeliveryPath::ClipboardPaste);
+  assert_eq!(owner(), x11rb::NONE);
 }
 
 /// One managed Tk window whose Entry reports submitted text and whose Listbox

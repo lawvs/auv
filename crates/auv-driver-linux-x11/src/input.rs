@@ -333,9 +333,10 @@ impl InputApi<'_> {
   /// the text, optional Return, settle, restore. The shortcut is Ctrl+V, or
   /// Ctrl+Shift+V when the active window is a terminal emulator, where Ctrl+V
   /// is the shell's quoted-insert. A hung clipboard owner or oversized text
-  /// fails before any key is sent. If the focused application does not
-  /// request the text within one second, the paste fails rather than
-  /// claiming delivery. Delivery is not verification of the inserted text.
+  /// fails before any key is sent. If the focused application asks nothing
+  /// within one second, or has not requested the text five seconds after it
+  /// started, the paste fails rather than claiming delivery. Delivery is not
+  /// verification of the inserted text.
   pub fn paste_text(&self, options: PasteTextOptions) -> DriverResult<InputActionResult> {
     let terminal = terminal_application(&self.session.window().active_application_ids());
     let mut input = self.session.lock_input()?;
@@ -355,7 +356,7 @@ impl InputApi<'_> {
           &[Key::Control, Key::Unicode('v')]
         };
         with_keys(&mut *input, shortcut, |_| Ok(()))?;
-        owner.wait_for_consumer(PASTE_CONSUMER_TIMEOUT, recipient)?;
+        owner.wait_for_consumer(PASTE_CONSUMER_START, PASTE_CONSUMER_TRANSFER, recipient)?;
         if options.submit != TextSubmit::No {
           with_keys(&mut *input, &[Key::Return], |_| Ok(()))?;
         }
@@ -409,10 +410,13 @@ fn terminal_application(application_ids: &[String]) -> Option<String> {
     .cloned()
 }
 
-// NOTICE: an application answering Ctrl+V converts CLIPBOARD within a few
-// event-loop turns. One second tolerates a busy toolkit without stalling a
-// workflow whose focused window ignores paste; raise it only with evidence.
-const PASTE_CONSUMER_TIMEOUT: Duration = Duration::from_secs(1);
+// NOTICE: an application answering Ctrl+V asks CLIPBOARD within a few
+// event-loop turns. One second to start tolerates a busy toolkit without
+// stalling a workflow whose focused window ignores paste. Once it has
+// started, five seconds covers a cold Chrome in a loaded OSWorld VM (2026-10-13:
+// four first pastes into a just-started Chrome timed out at one second).
+const PASTE_CONSUMER_START: Duration = Duration::from_secs(1);
+const PASTE_CONSUMER_TRANSFER: Duration = Duration::from_secs(5);
 
 /// Maps a paste outcome and its clipboard restore to the shared result. A
 /// failed restore is an error even when the paste itself was delivered.

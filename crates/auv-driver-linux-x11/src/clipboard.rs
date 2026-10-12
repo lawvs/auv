@@ -204,9 +204,11 @@ struct State {
   served: Option<Served>,
   /// SelectionClear arrived while serving.
   lost: bool,
-  /// An arm marker was processed; data requests after it are consumers.
+  /// An arm marker was processed; requests after it belong to the paste.
   armed: bool,
-  consumers: Vec<Window>,
+  /// Requestor of every request since the arm marker, and whether it
+  /// received text (`TARGETS` and `TIMESTAMP` do not).
+  requests: Vec<(Window, bool)>,
   notifications: Vec<SelectionNotifyEvent>,
   timestamps: Vec<Timestamp>,
   marker: u32,
@@ -442,37 +444,71 @@ impl Owner {
   /// CLIPBOARD owner to mirror it, and counting that read made a paste into
   /// a window that ignores Ctrl+V look delivered. Without a focus window,
   /// any client other than the clipboard manager counts.
-  pub(crate) fn wait_for_consumer(&self, timeout: Duration, recipient: Option<PasteRecipient>) -> DriverResult<()> {
+  ///
+  /// The consumer must start within `start` (any request, such as
+  /// `TARGETS`); once it has, it gets `transfer` from the shortcut to request
+  /// the text. A cold Chrome in a loaded VM asked for `TARGETS` several times
+  /// and missed a flat one-second window.
+  pub(crate) fn wait_for_consumer(&self, start: Duration, transfer: Duration, recipient: Option<PasteRecipient>) -> DriverResult<()> {
     let manager = self.connection.get_selection_owner(self.atoms.CLIPBOARD_MANAGER).map_err(backend)?.reply().map_err(backend)?.owner;
     let client = |window: Window| window & !self.resource_mask;
-    let deadline = Instant::now() + timeout;
-    let mut checked = 0;
+    let is_consumer = |window: Window| match recipient {
+      Some(recipient) => client(window) == recipient.client || recipient.process_id.is_some_and(|pid| self.client_pid(window) == Some(pid)),
+      None => manager == NONE || client(window) != client(manager),
+    };
+    let started = Instant::now();
+    let mut deadline = started + start;
+    let mut seen: Vec<(Window, bool)> = Vec::new();
+    let mut consumer_started = false;
     let mut found = false;
     while !found {
       let remaining = deadline.saturating_duration_since(Instant::now());
-      let fresh = self.wait(remaining, |state| (state.consumers.len() > checked).then(|| state.consumers[checked..].to_vec()))?;
+      let fresh = self.wait(remaining, |state| (state.requests.len() > seen.len()).then(|| state.requests[seen.len()..].to_vec()))?;
       let Some(fresh) = fresh else {
         break;
       };
-      checked += fresh.len();
       // XRes lookups run outside the state lock; the event thread keeps
       // answering requests meanwhile.
-      found = fresh.into_iter().any(|window| match recipient {
-        Some(recipient) => {
-          client(window) == recipient.client || recipient.process_id.is_some_and(|pid| self.client_pid(window) == Some(pid))
+      for &(window, text) in &fresh {
+        if is_consumer(window) {
+          found |= text;
+          if !consumer_started {
+            consumer_started = true;
+            deadline = started + transfer;
+          }
         }
-        None => manager == NONE || client(window) != client(manager),
-      });
+      }
+      seen.extend(fresh);
     }
     {
       let mut state = self.shared.lock()?;
       state.armed = false;
-      state.consumers.clear();
+      state.requests.clear();
     }
     if !found {
+      if consumer_started {
+        return Err(backend(format!(
+          "the focused window started a paste (it asked which formats CLIPBOARD offers) but did not request the text within {} ms; nothing was pasted (use input.typeText)",
+          transfer.as_millis()
+        )));
+      }
+      // Name the clients that did read CLIPBOARD, so a log shows whether the
+      // focused application was slow or a mirror (mutter) was the only reader.
+      let mut readers: Vec<String> = seen
+        .iter()
+        .filter(|(_, text)| *text)
+        .map(|&(window, _)| self.client_pid(window).map_or_else(|| format!("client {:#x}", client(window)), |pid| format!("pid {pid}")))
+        .collect();
+      readers.dedup();
+      let focused = recipient.and_then(|recipient| recipient.process_id).map_or_else(String::new, |pid| format!(" (pid {pid})"));
+      let others = if readers.is_empty() {
+        String::new()
+      } else {
+        format!("; only other clients read it ({})", readers.join(", "))
+      };
       return Err(backend(format!(
-        "the focused window did not request CLIPBOARD within {} ms after the paste shortcut; it may not accept paste here, so nothing was pasted (use input.typeText)",
-        timeout.as_millis()
+        "the focused window{focused} did not request CLIPBOARD within {} ms after the paste shortcut{others}; it may not accept paste here, so nothing was pasted (use input.typeText)",
+        start.as_millis()
       )));
     }
     // Round trip so the SelectionNotify we sent is processed before any
@@ -670,8 +706,8 @@ fn serve(connection: &RustConnection, window: Window, atoms: Atoms, limit: usize
     match event {
       Event::SelectionRequest(request) => {
         let consumer = reply(connection, &atoms, state.served.as_ref(), &request, limit);
-        if consumer && state.armed {
-          state.consumers.push(request.requestor);
+        if state.armed {
+          state.requests.push((request.requestor, consumer));
         }
       }
       Event::SelectionClear(clear) if clear.selection == atoms.CLIPBOARD && state.served.is_some() => {
@@ -689,7 +725,7 @@ fn serve(connection: &RustConnection, window: Window, atoms: Atoms, limit: usize
         }
         if kind == MARKER_ARM {
           state.armed = true;
-          state.consumers.clear();
+          state.requests.clear();
         }
         state.marker = sequence;
       }
