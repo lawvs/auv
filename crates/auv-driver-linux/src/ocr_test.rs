@@ -3,6 +3,50 @@ use auv_driver_common::geometry::Rect;
 use super::*;
 
 #[test]
+// ROOT CAUSE:
+//
+// If Tesseract ran on a 1x 1920x1080 capture, small UI text was often not
+// recognized at all; on 118 OSWorld captures a 2x upscale raised query
+// matches from 6 to 13. Recognition now runs on the upscaled image.
+//
+// The fix keeps returned bounds in input-image pixels by scaling TSV
+// coordinates back.
+#[test]
+fn upscaled_tsv_coordinates_map_back_to_input_pixels() {
+  let tsv = "\
+level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext
+5\t1\t1\t1\t1\t1\t200\t100\t60\t30\t96.0\tCart
+";
+
+  let matches = text_matches_from_tsv(tsv, "cart", 0.5);
+
+  assert_eq!(matches.matches[0].bounds, Rect::new(100.0, 50.0, 30.0, 15.0));
+  assert_eq!(text_recognition_from_tsv(tsv, 0.5).regions[0].bounds, Rect::new(100.0, 50.0, 30.0, 15.0));
+}
+
+// ROOT CAUSE:
+//
+// If Tesseract split a file name at its dot (`Huashan. jpg`) or printed
+// typographic quotes (`\u{2018}youtube\u{2019}`), exact queries such as
+// `Huashan.jpg` or `'youtube'` never matched visible text in OSWorld runs.
+//
+// The fix folds quotes and dashes and drops spaces next to `.` and `,` on
+// both sides of the comparison.
+#[test]
+fn matching_tolerates_tesseract_punctuation_spacing_and_typographic_quotes() {
+  let tsv = "\
+level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext
+5\t1\t1\t1\t1\t1\t10\t10\t60\t12\t90.0\tHuashan.
+5\t1\t1\t1\t1\t2\t74\t10\t20\t12\t90.0\tjpg
+5\t1\t1\t1\t2\t1\t10\t40\t40\t12\t90.0\tsearch
+5\t1\t1\t1\t2\t2\t54\t40\t60\t12\t90.0\t\u{2018}youtube\u{2019}
+";
+
+  assert_eq!(text_matches_from_tsv(tsv, "Huashan.jpg", 1.0).matches[0].text, "Huashan. jpg");
+  assert_eq!(text_matches_from_tsv(tsv, "'youtube'", 1.0).matches[0].bounds, Rect::new(54.0, 40.0, 60.0, 12.0));
+  assert!(text_matches_from_tsv(tsv, "Huashan jpg", 1.0).matches.is_empty(), "a dot is not a space");
+}
+
 #[cfg(target_os = "linux")]
 fn rejects_buffer_with_mismatched_length() {
   let result = recognize_text_in_rgba(&[0u8; 7], 2, 2, &TextRecognitionOptions::default());
@@ -25,7 +69,7 @@ level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theigh
 5\t1\t1\t1\t2\t1\t8\t42\t15\t9\t-1\tIgnoredConfidence
 ";
 
-  let recognition = text_recognition_from_tsv(tsv);
+  let recognition = text_recognition_from_tsv(tsv, 1.0);
 
   assert_eq!(recognition.text, "Hello World\nIgnoredConfidence");
   assert_eq!(recognition.regions.len(), 2);
@@ -52,7 +96,7 @@ level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theigh
 5\t1\t1\t1\t1\t3\t400\t705\t2160\t33\t80.0\tREADME-content
 ";
 
-  let matches = text_matches_from_tsv(tsv, "AGENTS.md");
+  let matches = text_matches_from_tsv(tsv, "AGENTS.md", 1.0);
 
   assert_eq!(matches.matches.len(), 1);
   assert_eq!(matches.matches[0].text, "AGENTS.md");
