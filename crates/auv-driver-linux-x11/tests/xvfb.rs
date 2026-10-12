@@ -2,9 +2,9 @@
 #![cfg(target_os = "linux")]
 
 use auv_driver_common::{
-  App, CaptureOptions, Click, ClickModifiers, DisturbanceLevel, Driver, DriverError, InputDeliveryPath, InputPolicy, InputTarget,
-  KeyPressOptions, KeyboardInput, MoveMouseRequest, PasteTextOptions, Point, PressKeysOptions, Rect, ScreenPoint, Scroll, ScrollOptions,
-  TextSubmit, TypeTextOptions, Window, WindowPoint, WindowSelector, input::MouseButton,
+  App, CaptureOptions, Click, ClickModifiers, ClickOptions, DisturbanceLevel, Driver, DriverError, InputDeliveryPath, InputPolicy,
+  InputTarget, KeyPressOptions, KeyboardInput, MoveMouseRequest, PasteTextOptions, Point, PressKeysOptions, Rect, ScreenPoint, Scroll,
+  ScrollOptions, TextSubmit, TypeTextOptions, Window, WindowPoint, WindowSelector, input::MouseButton,
 };
 use auv_driver_linux_x11::X11Driver;
 use std::{
@@ -360,7 +360,7 @@ fn clipboard_paste_delivers_text_and_restores_the_previous_clipboard() {
 }
 
 /// One managed Tk window whose Entry reports submitted text and whose Listbox
-/// reports its scroll position. `pid` publishes `_NET_WM_PID` through xprop
+/// reports its scroll position and left clicks. `pid` publishes `_NET_WM_PID` through xprop
 /// because Tk does not set it.
 fn spawn_managed_fixture(directory: &std::path::Path, class: &str, title: &str, geometry: &str, pid: bool) -> Child {
   Command::new("python3")
@@ -384,6 +384,7 @@ entry.bind('<Return>', submit)
 def record_scroll(event):
     root.after(50, lambda: (p/(class_name+'.scroll')).write_text(str(listbox.yview()[0])))
 listbox.bind('<Button-5>', record_scroll, add='+')
+listbox.bind('<Button-1>', lambda event: (p/(class_name+'.click')).write_text('clicked'), add='+')
 entry.focus_set()
 root.update()
 if pid:
@@ -534,4 +535,36 @@ fn ewmh_windows_resolve_activate_and_receive_targeted_input() {
   assert_eq!(result.focus_disturbance, DisturbanceLevel::Foreground);
   assert_eq!(input.current_position().unwrap(), Point::new(covered.x.round(), covered.y.round()));
   assert!(windows.scroll(&alpha_window, WindowPoint::new(-1.0, 0.0), Scroll::new(0.0, 120.0), ScrollOptions::default()).is_err());
+
+  // Window-relative click: Alpha is active now and covers this point of
+  // Beta's listbox, so the click only reaches Beta after activation raises it.
+  let beta_window = find("AUV Beta").unwrap();
+  let point = WindowPoint::new(40.0, 80.0);
+  let covered = windows.to_screen_point(&beta_window, point).unwrap().point();
+  let alpha_frame = find("AUV Alpha").unwrap().frame;
+  assert!(covered.x < alpha_frame.origin.x + alpha_frame.size.width && covered.y < alpha_frame.origin.y + alpha_frame.size.height);
+  let result = windows.click(&beta_window, point, ClickOptions::default()).unwrap();
+  wait_for(|| read_file(&directory, "AuvBeta.click").is_some());
+  assert!(read_file(&directory, "AuvAlpha.click").is_none());
+  assert_eq!(result.attempts[0].path, InputDeliveryPath::WindowTargetedMouse);
+  assert!(result.fallback_reason().is_some_and(|reason| reason.contains("X11 has no window-bound pointer delivery")), "{result:?}");
+  assert_eq!(result.focus_disturbance, DisturbanceLevel::Foreground);
+  assert_eq!(input.current_position().unwrap(), Point::new(covered.x.round(), covered.y.round()));
+  let background = ClickOptions {
+    policy: InputPolicy::BackgroundOnly,
+    ..ClickOptions::default()
+  };
+  assert!(matches!(windows.click(&beta_window, point, background), Err(DriverError::InvalidInput { .. })));
+
+  // Window drag: Beta is active and covers Alpha's lower-right corner again;
+  // a zero-length drag presses there only after activation raises Alpha.
+  let alpha_window = find("AUV Alpha").unwrap();
+  let point = WindowPoint::new(alpha_window.frame.size.width - 40.0, alpha_window.frame.size.height - 40.0);
+  let covered = windows.to_screen_point(&alpha_window, point).unwrap().point();
+  let (end, result) =
+    windows.drag(&alpha_window, MoveMouseRequest::direct(covered), MouseButton::Left, InputPolicy::ForegroundPreferred).unwrap();
+  wait_for(|| read_file(&directory, "AuvAlpha.click").is_some());
+  assert_eq!(end, covered);
+  assert_eq!(result.attempts[0].path, InputDeliveryPath::WindowTargetedMouse);
+  assert_eq!(result.focus_disturbance, DisturbanceLevel::Foreground);
 }

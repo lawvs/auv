@@ -14,9 +14,10 @@ use crate::{
   session::{backend, invalid},
 };
 use auv_driver_common::{
-  CoordinateSpace, DisturbanceLevel, DriverError, DriverResult, InputActionResult, InputAttempt, InputDeliveryPath, InputPolicy,
-  InputTarget, Point, Rect, ScreenPoint, Scroll, ScrollDeliveryCandidate, ScrollOptions, Size, Window, WindowPoint, WindowRef,
-  WindowSelector,
+  ClickOptions, CoordinateSpace, DisturbanceLevel, DriverError, DriverResult, InputActionResult, InputAttempt, InputDeliveryPath,
+  InputPolicy, InputTarget, MoveMouseRequest, Point, Rect, ScreenPoint, Scroll, ScrollDeliveryCandidate, ScrollOptions, Size, Window,
+  WindowPoint, WindowRef, WindowSelector,
+  input::MouseButton,
   selector::{AppSelector, TextMatcher},
 };
 use std::time::{Duration, Instant};
@@ -361,24 +362,7 @@ impl WindowApi<'_> {
       }
       _ => {}
     }
-    let recipient = self.recipient(&InputTarget::Window(window.clone()))?.expect("window target resolves a recipient");
-    let frame = {
-      let ewmh = self.session.lock_windows()?;
-      ewmh.activate(recipient.xid)?;
-      // Activation can restore or move the window; map against its new frame.
-      ewmh.client(recipient.xid)?.ok_or_else(|| not_found(recipient.xid))?.window.frame
-    };
-    let local = point.point();
-    if !local.x.is_finite()
-      || !local.y.is_finite()
-      || local.x < 0.0
-      || local.y < 0.0
-      || local.x > frame.size.width
-      || local.y > frame.size.height
-    {
-      return Err(invalid("X11 window.scroll point must be inside the current window frame"));
-    }
-    let screen = Point::new(frame.origin.x + local.x, frame.origin.y + local.y);
+    let (recipient, screen) = self.activate_at(window, point, "window.scroll")?;
     let mut result = self.session.input().scroll_at(screen, scroll, options.settle)?;
     result.attempts.insert(
       0,
@@ -394,6 +378,88 @@ impl WindowApi<'_> {
     );
     result.focus_disturbance = DisturbanceLevel::Foreground;
     Ok(result)
+  }
+
+  /// Activates the window, then clicks with foreground XTEST at the
+  /// window-relative point mapped through the window's fresh frame.
+  ///
+  /// X11 has no window-bound pointer route, so the result records a failed
+  /// `window_targeted_mouse` attempt before the foreground delivery.
+  // TODO(x11-window-click-strategy): `window_strategy` selects macOS
+  // background routes; X11 has none until an MPX/uinput background pointer
+  // is approved (cua-driver's MPX path is the reference), so it is ignored.
+  pub fn click(&self, window: &Window, point: WindowPoint, options: ClickOptions) -> DriverResult<InputActionResult> {
+    if options.policy == InputPolicy::BackgroundOnly {
+      return Err(invalid("X11 window.click cannot use background_only input policy"));
+    }
+    let (recipient, screen) = self.activate_at(window, point, "window.click")?;
+    let mut result = self.session.input().click_button_at(screen, options.button, options.click, options.modifiers)?;
+    result.attempts.insert(
+      0,
+      InputAttempt::failure(
+        InputDeliveryPath::WindowTargetedMouse,
+        format!(
+          "X11 has no window-bound pointer delivery; activated {} through EWMH _NET_ACTIVE_WINDOW and delivered a foreground XTEST click at root ({}, {})",
+          recipient.describe(),
+          screen.x,
+          screen.y
+        ),
+      ),
+    );
+    result.focus_disturbance = DisturbanceLevel::Foreground;
+    Ok(result)
+  }
+
+  /// Activates the window, then drags along `movement` with foreground XTEST.
+  /// The movement is already in root coordinates, as for the other drivers.
+  pub fn drag(
+    &self,
+    window: &Window,
+    mut movement: MoveMouseRequest,
+    button: MouseButton,
+    policy: InputPolicy,
+  ) -> DriverResult<(Point, InputActionResult)> {
+    if policy == InputPolicy::BackgroundOnly {
+      return Err(invalid("X11 window.drag cannot use background_only input policy"));
+    }
+    let recipient = self.recipient(&InputTarget::Window(window.clone()))?.expect("window target resolves a recipient");
+    self.prepare(&recipient)?;
+    movement.target = Some(InputTarget::Foreground);
+    let (point, mut result) = self.session.input().drag_mouse(movement, button)?;
+    result.attempts.insert(
+      0,
+      InputAttempt::failure(
+        InputDeliveryPath::WindowTargetedMouse,
+        format!(
+          "X11 has no window-bound pointer delivery; activated {} through EWMH _NET_ACTIVE_WINDOW and delivered a foreground XTEST drag",
+          recipient.describe()
+        ),
+      ),
+    );
+    result.focus_disturbance = DisturbanceLevel::Foreground;
+    Ok((point, result))
+  }
+
+  /// Activates the window and maps a frame-relative point onto root pixels
+  /// through the frame read after activation, which can restore or move it.
+  fn activate_at(&self, window: &Window, point: WindowPoint, operation: &str) -> DriverResult<(Recipient, Point)> {
+    let recipient = self.recipient(&InputTarget::Window(window.clone()))?.expect("window target resolves a recipient");
+    let frame = {
+      let ewmh = self.session.lock_windows()?;
+      ewmh.activate(recipient.xid)?;
+      ewmh.client(recipient.xid)?.ok_or_else(|| not_found(recipient.xid))?.window.frame
+    };
+    let local = point.point();
+    if !local.x.is_finite()
+      || !local.y.is_finite()
+      || local.x < 0.0
+      || local.y < 0.0
+      || local.x > frame.size.width
+      || local.y > frame.size.height
+    {
+      return Err(invalid(format!("X11 {operation} point must be inside the current window frame")));
+    }
+    Ok((recipient, Point::new(frame.origin.x + local.x, frame.origin.y + local.y)))
   }
 
   /// Binds an application or window target to one client window without

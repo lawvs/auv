@@ -364,7 +364,7 @@ impl WindowInput for WindowApi<'_> {
   fn click(&self, window: &Window, point: WindowPoint, options: ClickOptions) -> DriverResult<InputActionResult> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().click(window, point, options),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.click")),
+      LocalDriverSession::LinuxX11(session) => session.window().click(window, point, options),
     }
   }
 
@@ -394,7 +394,7 @@ impl WindowInput for WindowApi<'_> {
   ) -> DriverResult<(Point, InputActionResult)> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().drag(window, movement, button, policy),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.drag")),
+      LocalDriverSession::LinuxX11(session) => session.window().drag(window, movement, button, policy),
     }
   }
 }

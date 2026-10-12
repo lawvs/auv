@@ -40,9 +40,9 @@ The daemon Runner uses the same selection. Display capture and foreground
 input are available there, including sampled movement/drag, bounded held
 buttons/keys, screen-point scrolling, and `input.pasteText`. With an EWMH
 window manager it also serves `window.list`/`window.resolve`, window-relative
-scrolling, and application/window-targeted keyboard input (activate, confirm,
-then foreground XTEST; see below). Other X11 window calls and clipboard copy
-remain explicit errors. This does not make every higher-level Electron
+scrolling, clicks and drags, and application/window-targeted keyboard input
+(activate, confirm, then foreground XTEST; see below). Window capture, window
+OCR, and clipboard copy remain explicit errors. This does not make every higher-level Electron
 workflow X11-capable.
 
 ## Evidence
@@ -50,7 +50,7 @@ workflow X11-capable.
 Validated first on Debian 12 arm64 with Xvfb 21.1.7 and Tk 8.6.13, then through
 the integrated root facade on Ubuntu 24.04 x86_64 with XFCE and dummy Xorg
 1920x1080. macOS rejects session opening. EWMH window observation, activation,
-targeted typing, and window-relative scrolling were validated only with Xvfb,
+targeted typing, and window-relative scrolling, clicks, and drags were validated only with Xvfb,
 openbox, and Tk 8.6 on Ubuntu 22.04 x86_64 (Docker on an Apple Silicon host).
 Physical-seat and GPU-accelerated Xorg and XWayland remain unvalidated.
 
