@@ -14,6 +14,7 @@ import { AgentRunError, runAgent } from './agent'
 import { startAuvTools } from './auvTools'
 import { packageDirectory } from './cases'
 import { observeGuestCommand, recordKubernetesResource, runLoggedCommand, startLoggedCommand } from './executionLog'
+import { terminalUseOf } from './terminalUse'
 
 /** Evidence returned from one fresh OSWorld VM episode. */
 export interface EpisodeResult {
@@ -164,12 +165,12 @@ export async function runEpisode(
     const evaluation = await bridge('evaluate', item, ports, evidenceDirectory, agent.lastAction, log, signal)
     const score = Number(evaluation.score)
 
-    await writeResult(evidenceDirectory, { ...record, agent, auvLinuxSha256, score, status: 'evaluated' })
+    await writeResult(evidenceDirectory, { ...record, agent, auvLinuxSha256, score, status: 'evaluated', terminalUse: terminalUseOf(agent.steps) })
     return { agent, auvLinuxSha256, evidenceDirectory, podName, score }
   }
   catch (error) {
     agent ??= error instanceof AgentRunError ? error.partial : undefined
-    await writeResult(evidenceDirectory, { ...record, agent, error: describeError(error), errorStack: errorStackFrom(error), status: 'error' })
+    await writeResult(evidenceDirectory, { ...record, agent, error: describeError(error), errorStack: errorStackFrom(error), status: 'error', terminalUse: agent == null ? undefined : terminalUseOf(agent.steps) })
     throw error
   }
   finally {

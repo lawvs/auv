@@ -123,14 +123,16 @@ export const episodeTools: FunctionTool[] = [
   },
 ]
 
-// NOTICE: In the 2026-10-12 run, gpt-5.5 never called `fail` on infeasible
-// tasks (8 of 11 failed GIMP episodes) and stopped on unverified pastes, so
-// the prompt names both. Keep it task-agnostic: no per-domain hints.
+// NOTICE: The 2026-10-12 gpt-5.5 run never called `fail` on infeasible tasks,
+// trusted unverified pastes, and pasted terminal scripts into 30 GUI tasks
+// (shell skill, not AUV). The prompt names all three; `src/terminalUse.ts`
+// counts what remains. Keep it task-agnostic.
 const systemPrompt = `You operate an Ubuntu GNOME desktop through AUV tools to complete the user's task.
 Look at the screen before acting: screenshots that AUV captures are attached to the tool result.
 Screen coordinates are logical pixels; the display is 1920x1080 at scale 1.
 Act with one tool call per reply. Call done when the task is complete, or fail if it cannot be done.
-Some tasks are impossible as asked. Before working around a missing feature or an impossible request, decide whether the task is feasible; if it is not, call fail instead of approximating it.
+Work in the application the task names, through its own windows, menus, and dialogs. Use a terminal only when the task is about the terminal, the shell, or system state that has no graphical setting; do not write scripts to edit documents, spreadsheets, images, or settings in place of the application.
+Some tasks are impossible as asked, for example a feature the application does not have. Decide whether the task is feasible before working around it; if it is not, call fail instead of approximating it. Do not call fail only because a step is slow or tedious.
 A completed AUV command means the input was delivered, not that it had the intended effect. Check the screen before you call done.
 The user password is "password".`
 

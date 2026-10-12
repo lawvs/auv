@@ -1,13 +1,16 @@
+import type { AgentStep } from './agent'
+
 import process from 'node:process'
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
 import { packageDirectory } from './cases'
+import { terminalUseOf } from './terminalUse'
 
 /** One `result.json` written by `runEpisode`, for evaluated and failed episodes alike. */
 interface EpisodeRecord {
-  agent?: { lastAction?: string, steps: unknown[] }
+  agent?: { lastAction?: string, steps: AgentStep[] }
   auvLinuxSha256?: string
   domain: string
   error?: string
@@ -33,6 +36,9 @@ interface EpisodeRecord {
  * Scoring:
  * - `mean` averages the upstream evaluator score over every attempt; errors count as 0
  * - `pass@k` is 1 when any attempt scored 1
+ * - "GUI-only" episodes never targeted, opened, or typed into a terminal
+ *   (`src/terminalUse.ts`); they are the ones that measure AUV driving the
+ *   task's application. It is recomputed from steps, so older records count.
  */
 function main(): void {
   const episodes = process.argv[2] ?? join(packageDirectory, '.vieval', 'episodes')
@@ -64,11 +70,32 @@ function main(): void {
   })
 
   const passed = records.filter(record => record.status === 'evaluated' && Number(record.score) >= 1).length
+  const isPass = (record: EpisodeRecord): boolean => record.status === 'evaluated' && Number(record.score) >= 1
+  const routeOf = (record: EpisodeRecord): 'gui' | 'script' | 'terminal' => {
+    const use = terminalUseOf(record.agent?.steps ?? [])
+    return use.scriptSteps > 0 ? 'script' : use.terminalSteps > 0 ? 'terminal' : 'gui'
+  }
+  const tally = (subset: EpisodeRecord[]) => ({ episodes: subset.length, passed: subset.filter(isPass).length })
+  const routes = {
+    gui: tally(records.filter(record => routeOf(record) === 'gui')),
+    script: tally(records.filter(record => routeOf(record) === 'script')),
+    terminal: tally(records.filter(record => routeOf(record) === 'terminal')),
+  }
+  const domains = [...new Set(records.map(record => record.domain))].sort().map((domain) => {
+    const subset = records.filter(record => record.domain === domain)
+    return {
+      domain,
+      gui: tally(subset.filter(record => routeOf(record) === 'gui')),
+      overall: tally(subset),
+      terminal: tally(subset.filter(record => routeOf(record) !== 'gui')),
+    }
+  })
+  const rate = ({ episodes, passed }: { episodes: number, passed: number }): string => `${passed}/${episodes}${episodes > 0 ? ` (${(100 * passed / episodes).toFixed(1)}%)` : ''}`
   const errors = records.filter(record => record.status === 'error').length
   const binaries = [...new Set(records.map(record => record.auvLinuxSha256).filter(Boolean))]
   const output = join(packageDirectory, 'results')
   mkdirSync(output, { recursive: true })
-  writeFileSync(join(output, 'summary.json'), `${JSON.stringify({ generatedAt: new Date().toISOString(), overall: { auvLinuxSha256: binaries, episodes: records.length, errors, passed }, records, rows }, null, 2)}\n`)
+  writeFileSync(join(output, 'summary.json'), `${JSON.stringify({ domains, generatedAt: new Date().toISOString(), overall: { auvLinuxSha256: binaries, episodes: records.length, errors, passed, routes }, records, rows }, null, 2)}\n`)
   writeFileSync(join(output, 'summary.md'), [
     '# OSWorld x Vieval results',
     '',
@@ -76,15 +103,21 @@ function main(): void {
     '',
     `**Overall:** ${passed}/${records.length} episodes scored 1 (${records.length > 0 ? (100 * passed / records.length).toFixed(1) : '0.0'}%), ${errors} harness errors. Guest AUV sha256: ${binaries.map(sha => `\`${sha}\``).join(', ') || '-'}.`,
     '',
+    `**By route:** GUI-only ${rate(routes.gui)}; terminal without scripts ${rate(routes.terminal)}; pasted or typed scripts ${rate(routes.script)}. GUI-only episodes never targeted, opened, or typed into a terminal; \`os\` tasks often need one.`,
+    '',
+    '| Domain | All | GUI-only | Terminal or script |',
+    '| --- | ---: | ---: | ---: |',
+    ...domains.map(row => `| ${row.domain} | ${rate(row.overall)} | ${rate(row.gui)} | ${rate(row.terminal)} |`),
+    '',
     '| Task | Model | Attempts | Errors | Scores | Mean | pass@k |',
     '| --- | --- | ---: | ---: | --- | ---: | ---: |',
     ...rows.map(row => `| ${row.task} | ${row.model} | ${row.attempts} | ${row.errors} | ${row.scores.join(', ')} | ${row.mean.toFixed(2)} | ${row.passAtK} |`),
     '',
     '## Episodes',
     '',
-    '| Started | Task | Model | Repeat | Status | Score | Steps | Last action | Evidence / error |',
-    '| --- | --- | --- | ---: | --- | ---: | ---: | --- | --- |',
-    ...records.map(record => `| ${record.startedAt} | ${record.taskId.slice(0, 8)} | ${record.model} | ${record.repeat} | ${record.status} | ${record.score ?? '-'} | ${record.agent?.steps.length ?? '-'} | ${record.agent?.lastAction ?? '-'} | ${record.error?.replaceAll('|', '\\|').replaceAll('\n', ' ').slice(0, 160) ?? record.evidence} |`),
+    '| Started | Task | Model | Repeat | Status | Score | Steps | Route | Last action | Evidence / error |',
+    '| --- | --- | --- | ---: | --- | ---: | ---: | --- | --- | --- |',
+    ...records.map(record => `| ${record.startedAt} | ${record.taskId.slice(0, 8)} | ${record.model} | ${record.repeat} | ${record.status} | ${record.score ?? '-'} | ${record.agent?.steps.length ?? '-'} | ${routeOf(record)} | ${record.agent?.lastAction ?? '-'} | ${record.error?.replaceAll('|', '\\|').replaceAll('\n', ' ').slice(0, 160) ?? record.evidence} |`),
     '',
   ].join('\n'))
   process.stdout.write(`${rows.length} task/model rows from ${records.length} episodes -> ${relative(process.cwd(), output)}/summary.{json,md}\n`)

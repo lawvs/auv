@@ -6,6 +6,7 @@ import { modelFromRun, openaiFromRunContext } from 'vieval/plugins/chat-models'
 import { modelApiFrom } from '../src/agent'
 import { loadCases } from '../src/cases'
 import { runEpisode } from '../src/episode'
+import { terminalUseOf } from '../src/terminalUse'
 
 // Wall-clock budget for one episode: Pod boot, setup, every agent step, and
 // evaluation. Raise it together with OSWORLD_MAX_STEPS.
@@ -32,6 +33,12 @@ describeTask('osworld', () => {
       context.recordMetric('osworld.evidence', result.evidenceDirectory)
       context.recordMetric('osworld.agent.steps', result.agent.steps.length)
       context.recordMetric('osworld.agent.last_action', result.agent.lastAction ?? 'none')
+      // GUI-only episodes are the ones that measure AUV driving applications;
+      // see src/terminalUse.ts.
+      const terminalUse = terminalUseOf(result.agent.steps)
+      context.recordMetric('osworld.agent.terminal_steps', terminalUse.terminalSteps)
+      context.recordMetric('osworld.agent.script_steps', terminalUse.scriptSteps)
+      context.recordMetric('osworld.agent.gui_only', terminalUse.terminalSteps === 0)
       context.recordMetric('auv.run.ids', result.agent.runIds)
       context.recordMetric('auv.linux_binary.sha256', result.auvLinuxSha256)
       context.recordScore(result.score, 'exact')
