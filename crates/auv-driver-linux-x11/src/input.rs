@@ -186,7 +186,7 @@ impl InputApi<'_> {
     click: Click,
     modifiers: ClickModifiers,
   ) -> DriverResult<InputActionResult> {
-    let (x, y) = coordinates(point)?;
+    let (x, y) = root_pixel(point)?;
     if click.count() == 0 {
       return Err(invalid("click count must be positive"));
     }
@@ -207,8 +207,8 @@ impl InputApi<'_> {
   /// Drags between root coordinates, releasing the button even if motion fails.
   /// The path is a direct move; callers needing timed curves should not use it.
   pub fn drag(&self, from: Point, to: Point, button: MouseButton) -> DriverResult<InputActionResult> {
-    let (x, y) = coordinates(from)?;
-    let (end_x, end_y) = coordinates(to)?;
+    let (x, y) = root_pixel(from)?;
+    let (end_x, end_y) = root_pixel(to)?;
     let mut input = self.session.lock_input()?;
     input.move_mouse(x, y, Coordinate::Abs).map_err(backend)?;
     with_button(&mut *input, mouse_button(button), |input| input.move_mouse(end_x, end_y, Coordinate::Abs).map_err(backend))?;
@@ -217,7 +217,7 @@ impl InputApi<'_> {
   /// Converts logical pixels to whole XTEST wheel detents, carrying sub-notch
   /// remainder across calls on clones of this session.
   pub fn scroll_at(&self, point: Point, scroll: Scroll, settle: Duration) -> DriverResult<InputActionResult> {
-    let (x, y) = coordinates(point)?;
+    let (x, y) = root_pixel(point)?;
     let mut input = self.session.lock_input()?;
     let mut remainder = self.session.wheel_remainder.lock().map_err(|_| backend("X11 wheel remainder mutex poisoned"))?;
     let ((dx, dy), next_remainder) = wheel_notches(*remainder, scroll)?;
@@ -335,13 +335,13 @@ impl MouseBackend for X11MouseBackend {
   }
 
   fn move_to(&self, point: Point, _held: Option<MouseButton>) -> DriverResult<InputActionResult> {
-    let (x, y) = motion_coordinates(point)?;
+    let (x, y) = root_pixel(point)?;
     self.session.lock_input()?.move_mouse(x, y, Coordinate::Abs).map_err(backend)?;
     Ok(delivered(true))
   }
 
   fn button(&self, point: Point, button: MouseButton, down: bool) -> DriverResult<InputActionResult> {
-    let (x, y) = coordinates(point)?;
+    let (x, y) = root_pixel(point)?;
     let mut input = self.session.lock_input()?;
     input.move_mouse(x, y, Coordinate::Abs).map_err(backend)?;
     input
@@ -443,13 +443,6 @@ fn validate_foreground(target: &InputTarget, policy: InputPolicy, unsupported: &
   Ok(())
 }
 
-fn integral(value: f64) -> DriverResult<i32> {
-  if !value.is_finite() || value.fract() != 0.0 || value < f64::from(i32::MIN) || value > f64::from(i32::MAX) {
-    return Err(invalid("X11 input requires finite integral coordinates"));
-  }
-  Ok(value as i32)
-}
-
 // NOTICE(x11-wheel-unit): XTEST exposes discrete wheel buttons, not pixel
 // motion. Match the current Linux driver conversion (120 logical px/notch)
 // until a receiver test demonstrates a different X11 application scaling.
@@ -466,27 +459,21 @@ fn wheel_notches(remainder: (f64, f64), scroll: Scroll) -> DriverResult<((i32, i
   }
   Ok(((x.trunc() as i32, y.trunc() as i32), (x.fract(), y.fract())))
 }
-fn coordinates(point: Point) -> DriverResult<(i32, i32)> {
-  let x = integral(point.x)?;
-  let y = integral(point.y)?;
-  xtest_coordinates(x, y)
-}
-
-/// Projects sampled logical motion onto the integral X11 root pixel grid.
+/// Projects a logical point onto the nearest X11 root pixel.
 ///
-/// Shared mouse paths interpolate in logical coordinates and can therefore
-/// contain fractional intermediate points even when both endpoints are whole
-/// pixels. XTEST has no subpixel motion representation, so each motion sample
-/// uses the nearest root pixel while direct click and scroll coordinates keep
-/// their stricter lossless validation.
-fn motion_coordinates(point: Point) -> DriverResult<(i32, i32)> {
+/// XTEST has no subpixel representation, so every pointer path (motion
+/// samples, clicks, drags, scroll anchors) rounds to the nearest root pixel.
+/// Shared callers produce fractional points routinely: path interpolation,
+/// and the center of an OCR text box for `screen.clickText`. Rejecting them
+/// only failed the action without making delivery more precise.
+fn root_pixel(point: Point) -> DriverResult<(i32, i32)> {
   if !point.x.is_finite() || !point.y.is_finite() {
-    return Err(invalid("X11 pointer motion requires finite coordinates"));
+    return Err(invalid("X11 pointer input requires finite coordinates"));
   }
   let x = point.x.round();
   let y = point.y.round();
   if x < f64::from(i32::MIN) || x > f64::from(i32::MAX) || y < f64::from(i32::MIN) || y > f64::from(i32::MAX) {
-    return Err(invalid("X11 pointer motion coordinates exceed signed 32-bit range"));
+    return Err(invalid("X11 pointer coordinates exceed signed 32-bit range"));
   }
   xtest_coordinates(x as i32, y as i32)
 }
