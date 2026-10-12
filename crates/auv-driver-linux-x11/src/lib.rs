@@ -11,11 +11,15 @@ use auv_driver_common::{Driver, DriverDescriptor, DriverResult, DriverSession, P
 #[cfg(target_os = "linux")]
 mod capture;
 #[cfg(target_os = "linux")]
+mod clipboard;
+#[cfg(target_os = "linux")]
 mod input;
 #[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
 pub use capture::DisplayApi;
+#[cfg(target_os = "linux")]
+pub use clipboard::ClipboardApi;
 #[cfg(target_os = "linux")]
 pub use input::InputApi;
 #[cfg(target_os = "linux")]

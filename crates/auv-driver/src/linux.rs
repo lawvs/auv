@@ -243,9 +243,7 @@ impl InputApi<'_> {
   pub fn paste_text(&self, options: PasteTextOptions) -> DriverResult<InputActionResult> {
     match self.session {
       LocalDriverSession::Linux(session) => session.input().paste_text(options),
-      // TODO(x11-clipboard): add this only with an approved X11 selection
-      // ownership and restoration contract; see the X11 compatibility note.
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 clipboard paste")),
+      LocalDriverSession::LinuxX11(session) => session.input().paste_text(options),
     }
   }
 
@@ -280,6 +278,8 @@ impl InputApi<'_> {
   pub fn copy(&self) -> DriverResult<()> {
     match self.session {
       LocalDriverSession::Linux(session) => session.input().copy(),
+      // TODO(x11-clipboard-copy): Ctrl+C without reading the result was not
+      // part of the X11 paste slice; add it when a workflow needs X11 copy.
       LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 clipboard copy")),
     }
   }
@@ -287,7 +287,7 @@ impl InputApi<'_> {
   pub fn paste(&self) -> DriverResult<()> {
     match self.session {
       LocalDriverSession::Linux(session) => session.input().paste(),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 clipboard paste")),
+      LocalDriverSession::LinuxX11(session) => session.input().paste(),
     }
   }
 }
@@ -493,21 +493,21 @@ impl ClipboardApi<'_> {
   pub fn snapshot(&self) -> DriverResult<String> {
     match self.session {
       LocalDriverSession::Linux(session) => session.clipboard().snapshot(),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 clipboard.snapshot")),
+      LocalDriverSession::LinuxX11(session) => session.clipboard().snapshot(),
     }
   }
 
   pub fn restore(&self, snapshot: &str) -> DriverResult<()> {
     match self.session {
       LocalDriverSession::Linux(session) => session.clipboard().restore(snapshot),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 clipboard.restore")),
+      LocalDriverSession::LinuxX11(session) => session.clipboard().restore(snapshot),
     }
   }
 
   pub fn set_text(&self, text: &str) -> DriverResult<()> {
     match self.session {
       LocalDriverSession::Linux(session) => session.clipboard().set_text(text),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 clipboard.set_text")),
+      LocalDriverSession::LinuxX11(session) => session.clipboard().set_text(text),
     }
   }
 }

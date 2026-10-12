@@ -392,7 +392,7 @@ struct PasteTextArgs {
   support = { macos: Supported, linux: Partial("foreground delivery only; targeted delivery is unsupported"), windows: Partial("foreground delivery only; targeted delivery is unsupported") },
   target = OptionalKeyboard,
   group = "input",
-  description = "Paste text into the active control through the clipboard, then restore the prior clipboard snapshot. The Linux X11 driver does not support clipboard paste yet; use input.typeText there.",
+  description = "Paste text into the active control through the clipboard, then restore the prior clipboard snapshot.",
   input = PasteTextArgs,
 )]
 async fn paste_text_preserve_clipboard(input: InvokeCommandInput, args: PasteTextArgs) -> crate::InvokeExecutionResult {

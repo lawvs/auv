@@ -1,11 +1,12 @@
 use crate::{
   X11DriverSession,
+  clipboard::{self, Restore},
   session::{backend, invalid},
 };
 use auv_driver_common::{
-  Click, ClickModifiers, DisturbanceLevel, DriverError, DriverResult, InputActionResult, InputDeliveryPath, InputPolicy, InputTarget,
-  KeyPressOptions, KeyboardBackend, KeyboardHoldIdentity, KeyboardInput, KeyboardInputError, KeyboardInputProgress, Point, PressKeysOptions,
-  Scroll, TextSubmit, TypeTextOptions, input::MouseButton, mouse_input::MouseBackend,
+  Click, ClickModifiers, DisturbanceLevel, DriverError, DriverResult, InputActionResult, InputAttempt, InputDeliveryPath, InputPolicy,
+  InputTarget, KeyPressOptions, KeyboardBackend, KeyboardHoldIdentity, KeyboardInput, KeyboardInputError, KeyboardInputProgress,
+  PasteTextOptions, Point, PressKeysOptions, Scroll, TextSubmit, TypeTextOptions, input::MouseButton, mouse_input::MouseBackend,
 };
 use enigo::{Axis, Button, Coordinate, Direction, Key, Keyboard, Mouse};
 use std::{sync::Arc, time::Duration};
@@ -64,6 +65,14 @@ impl InputApi<'_> {
     dry_run: bool,
   ) -> Result<Option<Vec<InputActionResult>>, KeyboardInputError> {
     let plans = validate_keyboard_batch(target, &inputs)?;
+    // The paste size limit depends on the server, so check it here, after
+    // the static validation and still before the first event.
+    for (index, plan) in plans.iter().enumerate() {
+      if let KeyboardPlan::Paste { options } = plan {
+        clipboard::with_owner(self.session, |owner| clipboard::check_size(&options.text, owner.limit()))
+          .map_err(|cause| keyboard_failure(cause, index, vec![], 0))?;
+      }
+    }
     if dry_run {
       return Ok(None);
     }
@@ -97,6 +106,7 @@ impl InputApi<'_> {
         KeyboardPlan::Type { text, options } => {
           self.type_text(&text, options).map_err(|cause| keyboard_failure(cause, index, completed.clone(), 0))?
         }
+        KeyboardPlan::Paste { options } => self.paste_text(options).map_err(|cause| keyboard_failure(cause, index, completed.clone(), 0))?,
       };
       completed.push(action);
     }
@@ -282,10 +292,82 @@ impl InputApi<'_> {
       with_keys(&mut *input, &[Key::Return], |_| Ok(()))?;
     }
     std::thread::sleep(options.settle);
-    // TODO(x11-clipboard): clipboard fallback and preservation are deferred;
-    // introduce them only with an explicit selection-ownership contract.
+    // TODO(x11-type-text-clipboard-fallback): `allow_clipboard_fallback` is
+    // permitted but never taken; typing has no undeliverable characters to
+    // fall back for yet. Callers that want the clipboard use `paste_text`.
     Ok(delivered(false))
   }
+
+  /// Pastes text by owning X11 CLIPBOARD, then restores the prior clipboard.
+  ///
+  /// Holds the input lock for the whole transaction: snapshot, own, optional
+  /// Ctrl+A, Ctrl+V, wait for the focused application to request the text,
+  /// optional Return, settle, restore. A hung clipboard owner or oversized
+  /// text fails before any key is sent. If no application requests the text
+  /// within one second of Ctrl+V the paste fails rather than claiming
+  /// delivery. Delivery is not verification of the inserted text.
+  pub fn paste_text(&self, options: PasteTextOptions) -> DriverResult<InputActionResult> {
+    let mut input = self.session.lock_input()?;
+    clipboard::with_owner(self.session, |owner| {
+      clipboard::check_size(&options.text, owner.limit())?;
+      let snapshot = owner.snapshot()?;
+      let outcome = (|| {
+        owner.own(&options.text)?;
+        if options.replace_existing {
+          with_keys(&mut *input, &[Key::Control, Key::Unicode('a')], |_| Ok(()))?;
+        }
+        owner.arm()?;
+        with_keys(&mut *input, &[Key::Control, Key::Unicode('v')], |_| Ok(()))?;
+        owner.wait_for_consumer(PASTE_CONSUMER_TIMEOUT)?;
+        if options.submit != TextSubmit::No {
+          with_keys(&mut *input, &[Key::Return], |_| Ok(()))?;
+        }
+        std::thread::sleep(options.settle);
+        Ok(())
+      })();
+      paste_result(outcome, owner.restore(&snapshot))
+    })
+  }
+
+  /// Sends Ctrl+V without changing the clipboard.
+  pub fn paste(&self) -> DriverResult<()> {
+    with_keys(&mut *self.session.lock_input()?, &[Key::Control, Key::Unicode('v')], |_| Ok(()))
+  }
+}
+
+// NOTICE: an application answering Ctrl+V converts CLIPBOARD within a few
+// event-loop turns. One second tolerates a busy toolkit without stalling a
+// workflow whose focused window ignores paste; raise it only with evidence.
+const PASTE_CONSUMER_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Maps a paste outcome and its clipboard restore to the shared result. A
+/// failed restore is an error even when the paste itself was delivered.
+fn paste_result(outcome: DriverResult<()>, restored: DriverResult<Restore>) -> DriverResult<InputActionResult> {
+  let restored = match (outcome, restored) {
+    (Ok(()), Ok(restored)) => restored,
+    (Err(error), Ok(_)) => return Err(error),
+    (Ok(()), Err(error)) => return Err(backend(format!("pasted text but failed to restore clipboard: {error}"))),
+    (Err(error), Err(restore)) => return Err(backend(format!("{error}; additionally failed to restore clipboard: {restore}"))),
+  };
+  let (clipboard_disturbance, message) = match restored {
+    Restore::Exact => (DisturbanceLevel::Temporary, None),
+    Restore::TextOnly => (DisturbanceLevel::Unknown, Some("previous CLIPBOARD offered non-text content; only its text was restored")),
+    Restore::Skipped => {
+      (DisturbanceLevel::Unknown, Some("another client took CLIPBOARD during the paste; the previous clipboard was not restored"))
+    }
+  };
+  Ok(InputActionResult {
+    selected_path: InputDeliveryPath::ClipboardPaste,
+    attempts: vec![InputAttempt {
+      path: InputDeliveryPath::ClipboardPaste,
+      succeeded: true,
+      message: message.map(str::to_owned),
+    }],
+    verified: false,
+    mouse_disturbance: DisturbanceLevel::None,
+    focus_disturbance: DisturbanceLevel::Unknown,
+    clipboard_disturbance,
+  })
 }
 
 struct HeldKeyboardBackend {
@@ -370,6 +452,9 @@ enum KeyboardPlan {
     text: String,
     options: TypeTextOptions,
   },
+  Paste {
+    options: PasteTextOptions,
+  },
 }
 
 fn validate_keyboard_batch(target: &InputTarget, inputs: &[KeyboardInput]) -> Result<Vec<KeyboardPlan>, KeyboardInputError> {
@@ -401,7 +486,9 @@ fn validate_keyboard_batch(target: &InputTarget, inputs: &[KeyboardInput]) -> Re
             options: *options,
           })
           .map_err(|cause| keyboard_failure(cause, index, vec![], 0)),
-        KeyboardInput::PasteText { .. } => Err(keyboard_failure(DriverError::unsupported("X11 clipboard paste"), index, vec![], 0)),
+        KeyboardInput::PasteText { options, .. } => Ok(KeyboardPlan::Paste {
+          options: options.clone(),
+        }),
       }
     })
     .collect()

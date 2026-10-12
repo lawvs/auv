@@ -13,6 +13,8 @@ use std::{
 pub struct X11DriverSession {
   pub(crate) input: Arc<Mutex<Enigo>>,
   pub(crate) wheel_remainder: Arc<Mutex<(f64, f64)>>,
+  /// CLIPBOARD owner, opened on first clipboard use and shared by clones.
+  pub(crate) clipboard: Arc<Mutex<Option<crate::clipboard::Owner>>>,
   environment: Environment,
 }
 
@@ -77,6 +79,7 @@ pub(crate) fn open() -> DriverResult<X11DriverSession> {
   Ok(X11DriverSession {
     input: Arc::new(Mutex::new(input)),
     wheel_remainder: Arc::new(Mutex::new((0.0, 0.0))),
+    clipboard: Arc::new(Mutex::new(None)),
     environment,
   })
 }
@@ -90,6 +93,15 @@ impl X11DriverSession {
   /// Delivers foreground XTEST events, serialized across session clones.
   pub fn input(&self) -> crate::InputApi<'_> {
     crate::InputApi { session: self }
+  }
+
+  /// Reads and writes CLIPBOARD text through this session's selection owner.
+  pub fn clipboard(&self) -> crate::ClipboardApi<'_> {
+    crate::ClipboardApi { session: self }
+  }
+
+  pub(crate) fn display_name(&self) -> &str {
+    &self.environment.display
   }
 
   pub(crate) fn check_environment(&self) -> DriverResult<()> {

@@ -13,8 +13,8 @@ access to native Wayland windows or the complete Wayland desktop.
 
 This Rust driver crate uses the shared `auv-driver-common` contracts. It can be
 selected explicitly, and `auv-driver::LocalDriver` selects it for a pure X11
-process environment. The scope is screen observation and foreground
-mouse/keyboard input. Dispatch success is not application-level verification:
+process environment. The scope is screen observation, foreground
+mouse/keyboard input, and text paste through CLIPBOARD ownership. Dispatch success is not application-level verification:
 callers must inspect the resulting state.
 
 ## When to use
@@ -37,8 +37,8 @@ the facade preserves the Wayland default and its existing diagnostics.
 
 The daemon Runner uses the same selection. Display capture and foreground
 input are available there, including sampled movement/drag, bounded held
-buttons/keys, and screen-point scrolling. Unsupported X11 window and clipboard
-calls remain explicit errors. This does not make every higher-level Electron
+buttons/keys, screen-point scrolling, and `input.pasteText`. Unsupported X11
+window calls and clipboard copy remain explicit errors. This does not make every higher-level Electron
 workflow X11-capable.
 
 ## Evidence
@@ -108,6 +108,18 @@ assert!(!delivery.verified); // Inspect a new observation to verify the UI effec
   to bind Ctrl+A to select-all; this is not universal (Tk defaults differ).
 - `input().key_down/key_up/hold_keys`: bounded held combinations using the
   shared reverse-order release controller.
+- `input().paste_text`: owns X11 `CLIPBOARD`, sends optional Ctrl+A, Ctrl+V,
+  optional Return, then restores the prior clipboard. It fails before any key
+  if the current owner does not answer within one second or the text exceeds
+  one X request (`TODO(x11-clipboard-incr)`), and fails after Ctrl+V if no
+  application requests the text within one second. The result reports
+  `clipboard_paste` with `clipboard_disturbance: temporary`, or `unknown`
+  when the prior owner offered non-text content or another client took
+  `CLIPBOARD` mid-paste (the attempt message says which). X11 cannot return
+  ownership: a restored text stays served by this session and disappears
+  when the session drops. `input().paste` sends Ctrl+V only.
+- `clipboard().snapshot/restore/set_text`: text-only clipboard access through
+  the same owner; `set_text` content also lives only as long as the session.
 - `input().scroll_at`: logical-pixel deltas (positive X right, positive Y down),
   converted to XTEST wheel detents at 120 pixels per notch with sub-notch
   remainder carried within one session; at most 1024 detents per axis per call.
@@ -128,12 +140,13 @@ interleave input; dedicate the session to one agent worker.
 
 ## Intentional limits
 
-Window enumeration/activation, AT-SPI, clipboard ownership, background input,
-and overlay rendering are not part of this compatibility crate. The root facade
+Window enumeration/activation, AT-SPI, clipboard copy, rich (non-text)
+clipboard restore, INCR transfers, background input, and overlay rendering are
+not part of this compatibility crate. The root facade
 can apply its existing capture-driven OCR to X11 display captures. Existing
 shared types are reused; there is no alternate action-result or artifact schema.
-`allow_clipboard_fallback` permits but does not require a fallback; this driver
-never takes that path.
+`allow_clipboard_fallback` permits but does not require a fallback; `type_text`
+never takes that path. Use `paste_text` to paste explicitly.
 
 ## Validation commands
 
@@ -156,7 +169,10 @@ env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 \
 It checks monitor pixels, region bounds, application text, screenshot freshness,
 mouse buttons, scrolling, sampled movement/drag, logical button down/up, held
 key down/up, and pointer position against a temporary Tk fixture with an
-explicit Ctrl+A select-all binding. When using Docker, pass `--init` so
+explicit Ctrl+A select-all binding. A second test pastes Unicode text into the
+fixture, checks that the prior clipboard text and the empty clipboard are
+restored, and that a client taking `CLIPBOARD` mid-paste keeps it. Both tests
+share the display and serialize on a lock. When using Docker, pass `--init` so
 `xvfb-run` receives the X server readiness signal.
 The fixture and X server are disposed after the test. It does not establish
 general Xorg/Wayland desktop support.

@@ -776,6 +776,7 @@ dependencies = [
  "auv-driver-common",
  "enigo",
  "image",
+ "x11rb",
  "xcap",
  "xkeysym",
 ]
