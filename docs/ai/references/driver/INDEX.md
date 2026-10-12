@@ -7,7 +7,7 @@ Executable GUI evaluations live in
 test objects, tasks, and cases. Rust runs evaluations; shared desktop receivers
 use TypeScript. Raw run output stays local.
 
-Count: **70**
+Count: **71**
 
 - [`2026-05-20-macos-driver-namespace-after-window-screen-design.md`](2026-05-20-macos-driver-namespace-after-window-screen-design.md)
 - [`2026-05-20-macos-osascript-backend-design.md`](2026-05-20-macos-osascript-backend-design.md)
@@ -91,7 +91,7 @@ Count: **70**
 - [qqmusic-background-control.md](qqmusic-background-control.md): Living document tracking QQ Music background control without stealing foreground focus across SMTC, CoreAudio, and UIA phases.
 - [windows-capture-parity.md](windows-capture-parity.md): Living document tracking Windows capture latency parity with macOS ScreenCaptureKit across baseline, WGC v1, and GPU-load degradation phases.
 - [`windows-wheel-acceptance-matrix.md`](windows-wheel-acceptance-matrix.md): Per-application matrix of background wheel acceptance via `PostMessageW(WM_MOUSEWHEEL)` across Win32, DirectComposition, Chromium/Electron, and Qt toolkits (Brief 6).
-
+- [`2026-10-12-windows-clicktext.jsonl`](2026-10-12-windows-clicktext.jsonl): Empirical trial records (12 trials across `window.clickText` and `screen.clickText`) evaluating Windows clickText under `InputPolicy::BackgroundOnly`, verifying PR #323 screen-space coordinate semantics and sub-pixel accuracy on Win32, alongside Chromium focus gating and display-level BackgroundOnly boundaries.
 
 ## Related
 
