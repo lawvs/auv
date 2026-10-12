@@ -1,5 +1,7 @@
 use std::ffi::OsStr;
 
+use auv_driver_common::ApplicationIdKind;
+use auv_driver_common::application::unsupported_activation;
 use auv_driver_common::{
   Capture, CaptureOptions, Click, ClickModifiers, ClickOptions, DisplayCapture, DriverError, DriverResult, InputActionResult, InputPolicy,
   InputTarget, KeyPressOptions, KeyboardInput, KeyboardInputError, ObservedDisplays, PasteTextOptions, PermissionProbe, Point,
@@ -500,6 +502,30 @@ pub struct ClipboardApi<'a> {
   session: &'a LocalDriverSession,
 }
 
+/// Application activation, matching the macOS and Windows `ApplicationApi`.
+///
+/// Linux application ids are defined (`desktop_app_id` on Wayland, `wm_class`
+/// on X11) but neither backend activates yet, so both fail as unsupported
+/// before delivering anything; they never report an activation-only result.
+#[derive(Clone, Copy, Debug)]
+pub struct ApplicationApi<'a> {
+  session: &'a LocalDriverSession,
+}
+
+impl ApplicationApi<'_> {
+  pub fn activate(&self, application_id: &str, settle: std::time::Duration) -> DriverResult<auv_driver_common::ApplicationActivationResult> {
+    let _ = (application_id, settle);
+    match self.session {
+      // TODO(wayland-app-activate): per-desktop backends (GNOME, KDE, wlroots)
+      // land in a follow-up slice; see `unsupported_activation`.
+      LocalDriverSession::Linux(_) => Err(unsupported_activation(ApplicationIdKind::DesktopAppId)),
+      // TODO(x11-app-activate): EWMH `_NET_ACTIVE_WINDOW` lands after the X11
+      // window-list slice; see `unsupported_activation`.
+      LocalDriverSession::LinuxX11(_) => Err(unsupported_activation(ApplicationIdKind::WmClass)),
+    }
+  }
+}
+
 impl ClipboardApi<'_> {
   pub fn snapshot(&self) -> DriverResult<String> {
     match self.session {
@@ -561,6 +587,10 @@ impl LocalDriverSession {
 
   pub fn clipboard(&self) -> ClipboardApi<'_> {
     ClipboardApi { session: self }
+  }
+
+  pub fn applications(&self) -> ApplicationApi<'_> {
+    ApplicationApi { session: self }
   }
 }
 
@@ -633,6 +663,7 @@ mod tests {
     let _ = session.clipboard().snapshot();
     let _ = session.clipboard().restore("snapshot");
     let _ = session.clipboard().set_text("text");
+    let _ = session.applications().activate("org.example.App", std::time::Duration::ZERO);
   }
 
   #[test]

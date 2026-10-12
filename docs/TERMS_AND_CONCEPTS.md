@@ -966,8 +966,16 @@ The current scope terms are `screen`, `display`, `window`, and `region`.
 An execution target identifies the resource an invoke operation acts on. The
 shared invoke model distinguishes `Application`, `Window`, and `Display`
 targets instead of carrying an untyped string. The CLI spells these as
-`app:<bundle-id>`, `window:<window-id>`, and `display:<display-id>`. A bare
-`--target` value retains its historical meaning as an application id.
+`app:<application-id>`, `window:<window-id>`, and `display:<display-id>`. A
+bare `--target` value retains its historical meaning as an application id.
+
+An application id is the opaque id that `window.list` reports for a window's
+application on the same platform. Its kind depends on the platform: a bundle id
+on macOS (`bundle_id`) and a process image name on Windows (`process_name`).
+Linux kinds are defined but not yet produced: `desktop_app_id` (the AT-SPI
+application id) on Wayland and `wm_class` on X11. Some help text and selector
+fields still say "bundle id"; renaming them to application id is a separate
+slice.
 
 What an application id names depends on the platform. The `window.*` commands match a bundle id
 on macOS, the AT-SPI `AccessibleId` on Linux, and the executable file name on Windows (for
@@ -1686,6 +1694,31 @@ Verification is `verified_foreground` only when a platform observation reports
 the requested application as frontmost. A mismatched observation or unavailable
 observation is an explicit activation-only outcome; callers must not promote it
 to semantic success or recover that claim by taking an unrelated screenshot.
+
+One result type serves every platform. It records:
+
+- `requested_application_id` and `application_id_kind`: the application id
+  from the request (see [Execution Target](#execution-target)) and which
+  platform identity it names. The kind is part of the wire contract.
+- `method`: how the platform delivered the request. macOS uses
+  `apple_script_activate`. Windows uses `foreground_window`, which foregrounds
+  the application's main visible window. `ewmh_active_window` is reserved for
+  X11.
+- `activated_window`: the window reference the platform foregrounded, when
+  activation went through one window (Windows). It is absent on macOS.
+- `verification`: the status above, with `observed_application_id` when a
+  foreground application was observed.
+
+The result has no focus-disturbance field, because activation changes focus by
+definition. It has no attempts or fallback reasons yet, because every platform
+has one strategy.
+
+The CLI command is `app.activate`. The Runner API is
+`auv.api.driver.v1.ApplicationService/ActivateApplication`. The SDKs call it as
+`runner.applications().activate(...)` in Rust and
+`auv.applications.activate({ applicationId })` in JavaScript. A platform
+without activation, which is Linux today, fails with an `unsupported` error
+(gRPC `UNIMPLEMENTED`). It never returns an activation-only result.
 
 ## Action Executor
 
