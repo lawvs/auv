@@ -140,7 +140,7 @@ export async function runEpisode(
 
     const ports: Ports = { auv: await freePort(), chromium: await freePort(), server: await freePort(), vlc: await freePort() }
     const setupEndpoint = `http://127.0.0.1:${ports.server}`
-    portForward = await connectSetup(kubectl, podName, ports, setupEndpoint, caseId, signal)
+    portForward = await connectSetup(kubectl, podName, ports, setupEndpoint, { caseId, evidenceDirectory }, signal)
 
     await installAuv(setupEndpoint, binary, runtime, log, signal)
     const deviceId = await pairAuv(setupEndpoint, macosAuvBinary, ports.auv, profilesFile, log, signal)
@@ -253,7 +253,7 @@ async function connectSetup(
   podName: string,
   ports: Ports,
   endpoint: string,
-  caseId: string,
+  { caseId, evidenceDirectory }: { caseId: string, evidenceDirectory: string },
   signal: AbortSignal,
 ): Promise<ReturnType<typeof startLoggedCommand>> {
   for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -267,11 +267,13 @@ async function connectSetup(
       `${ports.auv}:${guestAuvPort}`,
     ], { signal }, { caseId, podName, runtime: 'host', tool: 'kubectl' })
     let ended = false
+    let stderr = ''
     // NOTICE: Both handlers are required. The returned forward is never
     // awaited, so when the case aborts, a rejection here was unhandled and
     // crashed the whole Vieval run (test_nogdrive, 2026-10-11).
-    const completion = forward.completion.then(() => {
+    const completion = forward.completion.then((output) => {
       ended = true
+      stderr = output.stderr
     }, () => {
       ended = true
     })
@@ -288,6 +290,12 @@ async function connectSetup(
     }
     forward.process.kill('SIGTERM')
     await completion
+    // A Pod that left Running never serves the setup API again; retrying for
+    // eight minutes hid why (libreoffice_impress/550ce7e7, 2026-10-12).
+    if (stderr.includes('pod is not running')) {
+      await savePodDiagnostics(kubectl, podName, evidenceDirectory, caseId)
+      throw new Error(`Episode Pod ${podName} stopped running before the setup API answered; see pod-diagnostics.log.`)
+    }
   }
   throw new Error('OSWorld setup API did not become ready within eight minutes.')
 }
@@ -479,6 +487,14 @@ function requiredEnvironment(name: string): string {
     throw new Error(`${name} must name the local input required for an OSWorld run.`)
   }
   return value
+}
+
+/** Saves the Pod status and QEMU log next to the episode before the Pod is deleted. */
+async function savePodDiagnostics(kubectl: string[], podName: string, evidenceDirectory: string, caseId: string): Promise<void> {
+  const log = { caseId, podName, runtime: 'host', tool: 'kubectl' } as const
+  const status = await runLoggedCommand('kubectl', [...kubectl, 'get', `pod/${podName}`, '--output', 'jsonpath={.status}'], { timeout: 30_000 }, log)
+  const logs = await runLoggedCommand('kubectl', [...kubectl, 'logs', `pod/${podName}`, '--tail', '300'], { timeout: 30_000 }, log)
+  await writeFile(join(evidenceDirectory, 'pod-diagnostics.log'), `--- status ---\n${status.stdout}${status.stderr}\n--- qemu log (tail) ---\n${logs.stdout}${logs.stderr}\n`)
 }
 
 /**
