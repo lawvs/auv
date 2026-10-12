@@ -170,13 +170,13 @@ fn special_keys_map_to_distinct_x11_keysyms() {
 }
 
 #[test]
-fn rejects_lossy_coordinates_and_invalid_text_before_mutation() {
+fn rejects_unrepresentable_coordinates_and_invalid_text_before_mutation() {
   for point in [
     Point::new(f64::NAN, 0.0),
-    Point::new(0.5, 1.0),
+    Point::new(f64::INFINITY, 1.0),
     Point::new(32768.0, 1.0),
   ] {
-    assert!(coordinates(point).is_err());
+    assert!(root_pixel(point).is_err());
   }
   assert!(
     validate_text(
@@ -201,7 +201,7 @@ fn rejects_lossy_coordinates_and_invalid_text_before_mutation() {
 }
 
 #[test]
-fn sampled_motion_rounds_subpixel_path_points_to_x11_root_pixels() {
+fn pointer_input_rounds_subpixel_points_to_x11_root_pixels() {
   // ROOT CAUSE:
   //
   // If a drag path crossed more than one pixel, shared path interpolation
@@ -209,10 +209,26 @@ fn sampled_motion_rounds_subpixel_path_points_to_x11_root_pixels() {
   // integral. Before the fix, X11 rejected the first fractional sample and no
   // multi-pixel sampled drag could complete. Motion now projects samples onto the
   // nearest X11 root pixel while direct click/scroll validation stays strict.
-  assert_eq!(motion_coordinates(Point::new(100.49, 200.5)).unwrap(), (100, 201));
-  assert_eq!(motion_coordinates(Point::new(-10.5, -20.49)).unwrap(), (-11, -20));
-  assert!(motion_coordinates(Point::new(f64::NAN, 0.0)).is_err());
-  assert!(motion_coordinates(Point::new(32768.0, 0.0)).is_err());
+  assert_eq!(root_pixel(Point::new(100.49, 200.5)).unwrap(), (100, 201));
+  assert_eq!(root_pixel(Point::new(-10.5, -20.49)).unwrap(), (-11, -20));
+  assert!(root_pixel(Point::new(f64::NAN, 0.0)).is_err());
+  assert!(root_pixel(Point::new(32768.0, 0.0)).is_err());
+}
+
+// ROOT CAUSE:
+//
+// If `screen.clickText` resolved an OCR box with an odd width or height, its
+// projected click point was a half pixel (for example 152.5), and the X11
+// driver rejected direct clicks that were not whole pixels: "X11 input
+// requires finite integral coordinates". 14 clickText calls failed this way
+// in the 2026-10-12 OSWorld chrome run.
+//
+// Before the fix, clicks and scroll anchors kept strict integral validation.
+// The fix rounds every pointer path to the nearest root pixel, like motion.
+#[test]
+fn click_text_half_pixel_centers_reach_the_nearest_root_pixel() {
+  assert_eq!(root_pixel(Point::new(152.5, 80.0)).unwrap(), (153, 80));
+  assert_eq!(root_pixel(Point::new(1919.4, 1079.6)).unwrap(), (1919, 1080));
 }
 
 #[test]
