@@ -114,11 +114,18 @@ assert!(!delivery.verified); // Inspect a new observation to verify the UI effec
   to bind Ctrl+A to select-all; this is not universal (Tk defaults differ).
 - `input().key_down/key_up/hold_keys`: bounded held combinations using the
   shared reverse-order release controller.
-- `input().paste_text`: owns X11 `CLIPBOARD`, sends optional Ctrl+A, Ctrl+V,
-  optional Return, then restores the prior clipboard. It fails before any key
-  if the current owner does not answer within one second or the text exceeds
-  one X request (`TODO(x11-clipboard-incr)`), and fails after Ctrl+V if no
-  application requests the text within one second. The result reports
+- `input().paste_text`: owns X11 `CLIPBOARD`, sends optional Ctrl+A, the
+  paste shortcut, optional Return, then restores the prior clipboard. The
+  shortcut is Ctrl+V, or Ctrl+Shift+V when the active window is a terminal
+  emulator (GNOME Terminal and other VTE terminals, Konsole, kitty,
+  Alacritty, WezTerm), where Ctrl+V is the shell's quoted-insert. It fails
+  before any key if the current owner does not answer within one second or
+  the text exceeds one X request (`TODO(x11-clipboard-incr)`), and fails
+  after the shortcut unless the focused window's client, or another client
+  of the same process (X-Resource PID), requests the text within one second.
+  Reads by other clients do not count: GNOME's mutter reads every new
+  `CLIPBOARD` owner to mirror it. It also fails when keyboard focus is None
+  or on the window manager's own window. The result reports
   `clipboard_paste` with `clipboard_disturbance: temporary`, or `unknown`
   when the prior owner offered non-text content or another client took
   `CLIPBOARD` mid-paste (the attempt message says which). X11 cannot return
@@ -193,7 +200,9 @@ mouse buttons, scrolling, sampled movement/drag, logical button down/up, held
 key down/up, and pointer position against a temporary Tk fixture with an
 explicit Ctrl+A select-all binding. A second test pastes Unicode text into the
 fixture, checks that the prior clipboard text and the empty clipboard are
-restored, and that a client taking `CLIPBOARD` mid-paste keeps it. Both tests
+restored, that a client taking `CLIPBOARD` mid-paste keeps it, and that a
+read by a client outside the focused process (as mutter does) is not counted
+as a paste. Both tests
 share the display and serialize on a lock. When using Docker, pass `--init` so
 `xvfb-run` receives the X server readiness signal. The fixture and X server
 are disposed after the test.

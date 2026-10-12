@@ -355,8 +355,28 @@ fn clipboard_paste_delivers_text_and_restores_the_previous_clipboard() {
     })
     .unwrap();
   let error = input.paste_text(submit("ignored")).unwrap_err();
-  assert!(error.to_string().contains("no paste consumer"), "{error}");
+  assert!(error.to_string().contains("did not request CLIPBOARD"), "{error}");
   assert_eq!(owner(), x11rb::NONE);
+
+  // 6. ROOT CAUSE: GNOME's mutter reads every new CLIPBOARD owner to mirror
+  // it. Before the fix, that read counted as the paste consumer, so a paste
+  // into a window that ignores Ctrl+V (here the focused Tk toplevel) reported
+  // success while nothing was pasted. Only the focused client's process
+  // counts now; xclip in another process plays mutter.
+  let mirror = std::thread::spawn(move || {
+    let (watcher, _) = x11rb::connect(None).unwrap();
+    let started = Instant::now();
+    while watcher.get_selection_owner(clipboard).unwrap().reply().unwrap().owner == x11rb::NONE {
+      assert!(started.elapsed() < Duration::from_secs(5), "the paste never took CLIPBOARD");
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    Command::new("xclip").args(["-o", "-selection", "clipboard"]).output().unwrap().stdout
+  });
+  let error = input.paste_text(submit("mirrored")).unwrap_err();
+  assert_eq!(String::from_utf8(mirror.join().unwrap()).unwrap(), "mirrored");
+  assert!(error.to_string().contains("did not request CLIPBOARD"), "{error}");
+  assert_eq!(owner(), x11rb::NONE);
+  assert!(!text_file.exists());
 }
 
 /// One managed Tk window whose Entry reports submitted text and whose Listbox

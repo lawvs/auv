@@ -519,6 +519,18 @@ impl WindowApi<'_> {
     }))
   }
 
+  /// Application ids of the EWMH active window; empty without an EWMH window
+  /// manager or an active window.
+  pub(crate) fn active_application_ids(&self) -> Vec<String> {
+    let Ok(ewmh) = self.session.lock_windows() else {
+      return Vec::new();
+    };
+    let Ok(Some(xid)) = ewmh.active_window() else {
+      return Vec::new();
+    };
+    ewmh.client(xid).ok().flatten().map(|client| client.application_ids().map(str::to_owned).collect()).unwrap_or_default()
+  }
+
   /// Activates the recipient and confirms it is active with keyboard focus.
   pub(crate) fn prepare(&self, recipient: &Recipient) -> DriverResult<()> {
     self.session.lock_windows()?.activate(recipient.xid)

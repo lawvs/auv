@@ -410,3 +410,22 @@ fn targeted_keyboard_result_reports_the_foreground_fallback() {
   assert!(!action.verified);
   assert!(action.validate().is_ok());
 }
+
+// ROOT CAUSE:
+//
+// If the focused window was GNOME Terminal, `input.pasteText` sent Ctrl+V,
+// which bash reads as quoted-insert: the next Return arrived as a literal
+// `^M` and pasted commands never ran. OSWorld terminal detours all failed.
+//
+// The fix sends Ctrl+Shift+V when the active window is a terminal emulator.
+#[test]
+fn terminal_emulators_are_recognized_by_application_id() {
+  let ids = |ids: &[&str]| ids.iter().map(|id| (*id).to_string()).collect::<Vec<_>>();
+  assert_eq!(terminal_application(&ids(&["gnome-terminal-server", "Gnome-terminal"])).as_deref(), Some("gnome-terminal-server"));
+  assert_eq!(terminal_application(&ids(&["org.gnome.Terminal"])).as_deref(), Some("org.gnome.Terminal"));
+  assert_eq!(terminal_application(&ids(&["kitty"])).as_deref(), Some("kitty"));
+  assert_eq!(terminal_application(&ids(&["libreoffice-calc", "libreoffice"])), None);
+  // xterm binds neither shortcut; it keeps Ctrl+V and fails honestly.
+  assert_eq!(terminal_application(&ids(&["xterm", "XTerm"])), None);
+  assert_eq!(terminal_application(&[]), None);
+}

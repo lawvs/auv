@@ -329,12 +329,15 @@ impl InputApi<'_> {
   /// Pastes text by owning X11 CLIPBOARD, then restores the prior clipboard.
   ///
   /// Holds the input lock for the whole transaction: snapshot, own, optional
-  /// Ctrl+A, Ctrl+V, wait for the focused application to request the text,
-  /// optional Return, settle, restore. A hung clipboard owner or oversized
-  /// text fails before any key is sent. If no application requests the text
-  /// within one second of Ctrl+V the paste fails rather than claiming
-  /// delivery. Delivery is not verification of the inserted text.
+  /// Ctrl+A, the paste shortcut, wait for the focused application to request
+  /// the text, optional Return, settle, restore. The shortcut is Ctrl+V, or
+  /// Ctrl+Shift+V when the active window is a terminal emulator, where Ctrl+V
+  /// is the shell's quoted-insert. A hung clipboard owner or oversized text
+  /// fails before any key is sent. If the focused application does not
+  /// request the text within one second, the paste fails rather than
+  /// claiming delivery. Delivery is not verification of the inserted text.
   pub fn paste_text(&self, options: PasteTextOptions) -> DriverResult<InputActionResult> {
+    let terminal = terminal_application(&self.session.window().active_application_ids());
     let mut input = self.session.lock_input()?;
     clipboard::with_owner(self.session, |owner| {
       clipboard::check_size(&options.text, owner.limit())?;
@@ -344,16 +347,31 @@ impl InputApi<'_> {
         if options.replace_existing {
           with_keys(&mut *input, &[Key::Control, Key::Unicode('a')], |_| Ok(()))?;
         }
+        let recipient = owner.focused_recipient()?;
         owner.arm()?;
-        with_keys(&mut *input, &[Key::Control, Key::Unicode('v')], |_| Ok(()))?;
-        owner.wait_for_consumer(PASTE_CONSUMER_TIMEOUT)?;
+        let shortcut: &[Key] = if terminal.is_some() {
+          &[Key::Control, Key::Shift, Key::Unicode('v')]
+        } else {
+          &[Key::Control, Key::Unicode('v')]
+        };
+        with_keys(&mut *input, shortcut, |_| Ok(()))?;
+        owner.wait_for_consumer(PASTE_CONSUMER_TIMEOUT, recipient)?;
         if options.submit != TextSubmit::No {
           with_keys(&mut *input, &[Key::Return], |_| Ok(()))?;
         }
         std::thread::sleep(options.settle);
         Ok(())
       })();
-      paste_result(outcome, owner.restore(&snapshot))
+      let mut result = paste_result(outcome, owner.restore(&snapshot))?;
+      if let Some(terminal) = terminal {
+        let note = format!("pasted with Ctrl+Shift+V because the active window is the terminal emulator {terminal}");
+        let attempt = &mut result.attempts[0];
+        attempt.message = Some(match attempt.message.take() {
+          Some(message) => format!("{note}; {message}"),
+          None => note,
+        });
+      }
+      Ok(result)
     })
   }
 
@@ -361,6 +379,34 @@ impl InputApi<'_> {
   pub fn paste(&self) -> DriverResult<()> {
     with_keys(&mut *self.session.lock_input()?, &[Key::Control, Key::Unicode('v')], |_| Ok(()))
   }
+}
+
+/// The application id of a terminal emulator among the active window's ids.
+///
+/// VTE terminals (GNOME Terminal, Tilix, Terminator, xfce4-terminal), Konsole,
+/// kitty, Alacritty, and WezTerm paste on Ctrl+Shift+V. xterm and urxvt bind
+/// neither shortcut by default and keep Ctrl+V, which then fails honestly.
+// NOTICE(x11-terminal-paste): matched by WM_CLASS/GTK id substrings, as
+// cua-driver's `terminal.rs` does; extend the list with evidence from a
+// terminal that pastes on Ctrl+Shift+V but is not recognized.
+fn terminal_application(application_ids: &[String]) -> Option<String> {
+  application_ids
+    .iter()
+    .find(|id| {
+      let id = id.to_ascii_lowercase();
+      [
+        "terminal",
+        "tilix",
+        "terminator",
+        "konsole",
+        "kitty",
+        "alacritty",
+        "wezterm",
+      ]
+      .iter()
+      .any(|name| id.contains(name))
+    })
+    .cloned()
 }
 
 // NOTICE: an application answering Ctrl+V converts CLIPBOARD within a few

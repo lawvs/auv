@@ -47,6 +47,7 @@ x11rb::atom_manager! {
     AUV_SELECTION: b"_AUV_SELECTION",
     AUV_TIMESTAMP: b"_AUV_TIMESTAMP",
     AUV_MARKER: b"_AUV_CLIPBOARD_MARKER",
+    _NET_SUPPORTING_WM_CHECK,
   }
 }
 
@@ -61,6 +62,14 @@ const REQUEST_HEADROOM: usize = 256;
 const MARKER_BARRIER: u32 = 0;
 const MARKER_ARM: u32 = 1;
 const MARKER_SHUTDOWN: u32 = 2;
+
+/// The focused X client a paste is meant for, captured before the shortcut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PasteRecipient {
+  /// Resource-id base of the client that created the focus window.
+  client: u32,
+  process_id: Option<u32>,
+}
 
 /// Text the session currently serves as the CLIPBOARD owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,6 +228,7 @@ impl Shared {
 /// window, and the event thread that answers SelectionRequest events.
 pub(crate) struct Owner {
   connection: Arc<RustConnection>,
+  root: Window,
   window: Window,
   atoms: Atoms,
   limit: usize,
@@ -274,6 +284,7 @@ impl Owner {
       .map_err(backend)?;
     Ok(Self {
       connection,
+      root,
       window,
       atoms,
       limit,
@@ -355,23 +366,112 @@ impl Owner {
     self.marker(MARKER_ARM)
   }
 
-  /// Waits for an application other than the clipboard manager to request
-  /// text after [`Owner::arm`].
-  pub(crate) fn wait_for_consumer(&self, timeout: Duration) -> DriverResult<()> {
+  /// The X client and process that receive keyboard input, which a paste
+  /// must reach: the focus window, or with PointerRoot focus the deepest
+  /// window under the pointer. `None` only when PointerRoot focus has no
+  /// window under the pointer; a None focus, where keys reach no window, is
+  /// an error.
+  pub(crate) fn focused_recipient(&self) -> DriverResult<Option<PasteRecipient>> {
+    const FOCUS_NONE: Window = 0;
+    const FOCUS_POINTER_ROOT: Window = 1;
+    let mut focus = self.connection.get_input_focus().map_err(backend)?.reply().map_err(backend)?.focus;
+    if focus == FOCUS_NONE {
+      return Err(backend("no X11 window has keyboard focus, so a paste shortcut would reach no application; focus the target first"));
+    }
+    if focus == FOCUS_POINTER_ROOT {
+      // Under a reparenting WM the root's child is a frame owned by the WM;
+      // descend to the application window that actually receives keys.
+      let mut window = self.root;
+      loop {
+        let child = self.connection.query_pointer(window).map_err(backend)?.reply().map_err(backend)?.child;
+        if child == NONE {
+          break;
+        }
+        window = child;
+      }
+      if window == self.root {
+        return Ok(None);
+      }
+      focus = window;
+    }
+    let client = focus & !self.resource_mask;
+    // A WM parks focus on a window of its own when no application is active
+    // (mutter's no-focus window). The WM also reads new CLIPBOARD owners, so
+    // treating it as the recipient would report a paste that reached nobody.
+    if self.window_manager_window()?.is_some_and(|check| check & !self.resource_mask == client) {
+      return Err(backend(
+        "keyboard focus is on the window manager, not an application window, so nothing would be pasted; activate the target window first",
+      ));
+    }
+    Ok(Some(PasteRecipient {
+      client,
+      process_id: self.client_pid(focus),
+    }))
+  }
+
+  /// The EWMH `_NET_SUPPORTING_WM_CHECK` window, which the running window
+  /// manager creates on its own connection. `None` without an EWMH WM.
+  fn window_manager_window(&self) -> DriverResult<Option<Window>> {
+    let reply = self
+      .connection
+      .get_property(false, self.root, self.atoms._NET_SUPPORTING_WM_CHECK, AtomEnum::WINDOW, 0, 1)
+      .map_err(backend)?
+      .reply()
+      .map_err(backend)?;
+    Ok(reply.value32().and_then(|mut values| values.next()).filter(|window| *window != NONE))
+  }
+
+  /// The local process id of the client that created `window`, through the
+  /// X-Resource extension. `None` when the server lacks XRes, the window is
+  /// gone, or the client is remote.
+  fn client_pid(&self, window: Window) -> Option<u32> {
+    use x11rb::protocol::res::{ClientIdMask, ClientIdSpec, ConnectionExt as _};
+    self.connection.extension_information(x11rb::protocol::res::X11_EXTENSION_NAME).ok()??;
+    let spec = ClientIdSpec {
+      client: window,
+      mask: ClientIdMask::LOCAL_CLIENT_PID,
+    };
+    let reply = self.connection.res_query_client_ids(&[spec]).ok()?.reply().ok()?;
+    reply.ids.into_iter().find(|id| id.spec.mask.contains(ClientIdMask::LOCAL_CLIENT_PID)).and_then(|id| id.value.first().copied())
+  }
+
+  /// Waits until the focused application requests text after [`Owner::arm`].
+  ///
+  /// Only the focused window's X client, or another client of the same
+  /// process, counts as the consumer: GNOME's mutter reads every new
+  /// CLIPBOARD owner to mirror it, and counting that read made a paste into
+  /// a window that ignores Ctrl+V look delivered. Without a focus window,
+  /// any client other than the clipboard manager counts.
+  pub(crate) fn wait_for_consumer(&self, timeout: Duration, recipient: Option<PasteRecipient>) -> DriverResult<()> {
     let manager = self.connection.get_selection_owner(self.atoms.CLIPBOARD_MANAGER).map_err(backend)?.reply().map_err(backend)?.owner;
     let client = |window: Window| window & !self.resource_mask;
-    let found = self.wait(timeout, |state| {
-      let found = state.consumers.iter().any(|&window| manager == NONE || client(window) != client(manager));
-      found.then_some(())
-    })?;
+    let deadline = Instant::now() + timeout;
+    let mut checked = 0;
+    let mut found = false;
+    while !found {
+      let remaining = deadline.saturating_duration_since(Instant::now());
+      let fresh = self.wait(remaining, |state| (state.consumers.len() > checked).then(|| state.consumers[checked..].to_vec()))?;
+      let Some(fresh) = fresh else {
+        break;
+      };
+      checked += fresh.len();
+      // XRes lookups run outside the state lock; the event thread keeps
+      // answering requests meanwhile.
+      found = fresh.into_iter().any(|window| match recipient {
+        Some(recipient) => {
+          client(window) == recipient.client || recipient.process_id.is_some_and(|pid| self.client_pid(window) == Some(pid))
+        }
+        None => manager == NONE || client(window) != client(manager),
+      });
+    }
     {
       let mut state = self.shared.lock()?;
       state.armed = false;
       state.consumers.clear();
     }
-    if found.is_none() {
+    if !found {
       return Err(backend(format!(
-        "no paste consumer requested CLIPBOARD within {} ms after Ctrl+V; the focused window may not accept paste",
+        "the focused window did not request CLIPBOARD within {} ms after the paste shortcut; it may not accept paste here, so nothing was pasted (use input.typeText)",
         timeout.as_millis()
       )));
     }

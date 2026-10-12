@@ -14,6 +14,7 @@ fn atoms() -> Atoms {
     AUV_SELECTION: 109,
     AUV_TIMESTAMP: 110,
     AUV_MARKER: 111,
+    _NET_SUPPORTING_WM_CHECK: 112,
   }
 }
 
