@@ -6,10 +6,11 @@
   "scripts": {
     "cases:list": "tsx ./src/listCases.ts",
     "doctor": "tsx ./src/doctor.ts",
-    "eval:run": "vieval run --config ./vieval.config.ts --project osworld-kubernetes --report-out ./.vieval/reports",
+    "eval:run": "vieval run --config ./vieval.config.ts --project osworld-kubernetes --report-out ./.vieval/reports --with-viewer",
     "results:summarize": "tsx ./src/summarize.ts",
     "test:run": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "viewer": "vieval viewer ./.vieval/reports"
   },
   "dependencies": {
     "@moeru/std": "catalog:",
@@ -18,6 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@vieval/viewer": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:vitest"
