@@ -256,8 +256,14 @@ fn delivery_does_not_claim_semantic_success_or_clipboard_changes() {
   assert!(result.validate().is_ok());
 }
 
+// ROOT CAUSE:
+//
+// If a keyboard batch contained a paste, X11 rejected the whole batch because
+// the driver had no CLIPBOARD owner. Before the fix, `input.keyboard` batches
+// with `pasteText` failed on X11 while Wayland and macOS delivered them.
+// The fix plans the paste so it runs in order with the other actions.
 #[test]
-fn keyboard_batch_validation_rejects_unsupported_actions_before_delivery() {
+fn keyboard_batch_plans_paste_in_order() {
   let inputs = vec![
     KeyboardInput::TypeText {
       text: "safe".into(),
@@ -267,23 +273,63 @@ fn keyboard_batch_validation_rejects_unsupported_actions_before_delivery() {
       },
     },
     KeyboardInput::PasteText {
-      options: auv_driver_common::PasteTextOptions {
-        text: "not delivered".into(),
+      options: PasteTextOptions {
+        text: "héllo 世界".into(),
         ..Default::default()
       },
       policy: InputPolicy::ForegroundPreferred,
     },
   ];
 
-  let error = validate_keyboard_batch(&InputTarget::Foreground, &inputs).expect_err("clipboard action must reject the whole batch");
-  assert_eq!(error.progress.action_index, 1);
-  assert!(error.progress.completed.is_empty());
-  assert!(matches!(
-    error.cause,
-    DriverError::Unsupported {
-      operation: "X11 clipboard paste"
-    }
-  ));
+  let plans = validate_keyboard_batch(&InputTarget::Foreground, &inputs).unwrap();
+  assert!(matches!(&plans[0], KeyboardPlan::Type { text, .. } if text == "safe"));
+  assert!(matches!(&plans[1], KeyboardPlan::Paste { options } if options.text == "héllo 世界"));
+}
+
+#[test]
+fn keyboard_batch_rejects_background_paste_before_delivery() {
+  let inputs = vec![KeyboardInput::PasteText {
+    options: PasteTextOptions::default(),
+    policy: InputPolicy::BackgroundOnly,
+  }];
+  let error = validate_keyboard_batch(&InputTarget::Foreground, &inputs).expect_err("background paste must be rejected");
+  assert_eq!(error.progress.action_index, 0);
+  assert!(matches!(error.cause, DriverError::InvalidInput { .. }));
+}
+
+#[test]
+fn exact_restore_reports_temporary_clipboard_disturbance() {
+  let result = paste_result(Ok(()), Ok(Restore::Exact)).unwrap();
+  assert_eq!(result.selected_path, InputDeliveryPath::ClipboardPaste);
+  assert_eq!(result.clipboard_disturbance, DisturbanceLevel::Temporary);
+  assert_eq!(result.focus_disturbance, DisturbanceLevel::Unknown);
+  assert_eq!(result.mouse_disturbance, DisturbanceLevel::None);
+  assert!(!result.verified);
+  assert_eq!(result.attempts.len(), 1);
+  assert!(result.attempts[0].succeeded);
+  assert_eq!(result.attempts[0].message, None);
+  assert!(result.validate().is_ok());
+}
+
+#[test]
+fn partial_or_skipped_restore_reports_unknown_clipboard_disturbance() {
+  for restore in [Restore::TextOnly, Restore::Skipped] {
+    let result = paste_result(Ok(()), Ok(restore)).unwrap();
+    assert_eq!(result.clipboard_disturbance, DisturbanceLevel::Unknown, "{restore:?}");
+    assert!(result.attempts[0].succeeded);
+    assert!(result.attempts[0].message.is_some(), "{restore:?} must explain why the clipboard differs");
+  }
+}
+
+#[test]
+fn restore_failure_is_an_error_even_after_delivery() {
+  let error = paste_result(Ok(()), Err(backend("owner gone"))).unwrap_err();
+  assert!(error.to_string().contains("pasted text but failed to restore clipboard"), "{error}");
+  let error = paste_result(Err(backend("no paste consumer requested CLIPBOARD")), Err(backend("owner gone"))).unwrap_err();
+  assert!(error.to_string().contains("no paste consumer"), "{error}");
+  assert!(error.to_string().contains("additionally failed to restore clipboard"), "{error}");
+  let error = paste_result(Err(backend("no paste consumer requested CLIPBOARD")), Ok(Restore::Exact)).unwrap_err();
+  assert!(error.to_string().contains("no paste consumer"), "{error}");
 }
 
 #[test]
