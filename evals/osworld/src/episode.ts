@@ -1,4 +1,4 @@
-import type { AgentResult, ModelEndpoint } from './agent'
+import type { AgentResult, AgentTelemetry, ModelEndpoint } from './agent'
 import type { OsworldCase } from './cases'
 
 import process from 'node:process'
@@ -111,7 +111,7 @@ export function describeError(error: unknown): string {
 export async function runEpisode(
   item: OsworldCase,
   endpoint: ModelEndpoint,
-  { repeat, signal }: { repeat: number, signal: AbortSignal },
+  { repeat, signal, telemetry }: { repeat: number, signal: AbortSignal, telemetry?: AgentTelemetry },
 ): Promise<EpisodeResult> {
   const kubeconfig = requiredEnvironment('OSWORLD_KUBECONFIG')
   const auvBinary = resolve(requiredEnvironment('OSWORLD_AUV_LINUX_BINARY'))
@@ -168,6 +168,7 @@ export async function runEpisode(
     agent = await runAgent(item.task.instruction, endpoint, auvTools, {
       maxSteps: Number(process.env.OSWORLD_MAX_STEPS ?? 15),
       signal,
+      telemetry,
     })
     // Let applications persist state before the evaluator reads it; see `evaluationSettleMs`.
     await sleepWithAbort(evaluationSettleMs, signal)

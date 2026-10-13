@@ -10,7 +10,7 @@ import { terminalUseOf } from './terminalUse'
 
 /** One `result.json` written by `runEpisode`, for evaluated and failed episodes alike. */
 interface EpisodeRecord {
-  agent?: { lastAction?: string, steps: AgentStep[] }
+  agent?: { lastAction?: string, modelRequests?: number, steps: AgentStep[], usage?: Record<string, number> }
   auvLinuxSha256?: string
   domain: string
   error?: string
@@ -90,12 +90,25 @@ function main(): void {
       terminal: tally(subset.filter(record => routeOf(record) !== 'gui')),
     }
   })
+  // Token usage per model, summed over every episode that recorded it.
+  const usageByModel: Record<string, Record<string, number>> = {}
+  for (const record of records) {
+    const usage = (usageByModel[record.model] ??= { episodes: 0, requests: 0 })
+    if (record.agent?.usage == null) {
+      continue
+    }
+    usage.episodes += 1
+    usage.requests += record.agent.modelRequests ?? 0
+    for (const [key, value] of Object.entries(record.agent.usage)) {
+      usage[key] = (usage[key] ?? 0) + value
+    }
+  }
   const rate = ({ episodes, passed }: { episodes: number, passed: number }): string => `${passed}/${episodes}${episodes > 0 ? ` (${(100 * passed / episodes).toFixed(1)}%)` : ''}`
   const errors = records.filter(record => record.status === 'error').length
   const binaries = [...new Set(records.map(record => record.auvLinuxSha256).filter(Boolean))]
   const output = join(packageDirectory, 'results')
   mkdirSync(output, { recursive: true })
-  writeFileSync(join(output, 'summary.json'), `${JSON.stringify({ domains, generatedAt: new Date().toISOString(), overall: { auvLinuxSha256: binaries, episodes: records.length, errors, passed, routes }, records, rows }, null, 2)}\n`)
+  writeFileSync(join(output, 'summary.json'), `${JSON.stringify({ domains, generatedAt: new Date().toISOString(), overall: { auvLinuxSha256: binaries, episodes: records.length, errors, passed, routes, usageByModel }, records, rows }, null, 2)}\n`)
   writeFileSync(join(output, 'summary.md'), [
     '# OSWorld x Vieval results',
     '',
@@ -104,6 +117,9 @@ function main(): void {
     `**Overall:** ${passed}/${records.length} episodes scored 1 (${records.length > 0 ? (100 * passed / records.length).toFixed(1) : '0.0'}%), ${errors} harness errors. Guest AUV sha256: ${binaries.map(sha => `\`${sha}\``).join(', ') || '-'}.`,
     '',
     `**By route:** GUI-only ${rate(routes.gui)}; terminal without scripts ${rate(routes.terminal)}; pasted or typed scripts ${rate(routes.script)}. GUI-only episodes never targeted, opened, or typed into a terminal; \`os\` tasks often need one.`,
+    '',
+    ...Object.entries(usageByModel).filter(([, usage]) => usage.episodes > 0).map(([model, usage]) =>
+      `**Usage ${model}:** ${usage.requests} requests over ${usage.episodes} episodes with usage; input ${usage.input_tokens ?? usage.prompt_tokens ?? 0} (cached ${usage['input_tokens_details.cached_tokens'] ?? usage['prompt_tokens_details.cached_tokens'] ?? 0}), output ${usage.output_tokens ?? usage.completion_tokens ?? 0} (reasoning ${usage['output_tokens_details.reasoning_tokens'] ?? usage['completion_tokens_details.reasoning_tokens'] ?? 0}) tokens.`),
     '',
     '| Domain | All | GUI-only | Terminal or script |',
     '| --- | ---: | ---: | ---: |',

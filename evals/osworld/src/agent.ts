@@ -3,9 +3,13 @@ import { sleepWithAbort } from '@moeru/std'
 export interface AgentResult {
   /** `DONE` or `FAIL` when the model ended the episode, as OSWorld expects. */
   lastAction?: 'DONE' | 'FAIL'
+  /** Model replies received, including retries' final successes only. */
+  modelRequests?: number
   runIds: string[]
   /** One entry per model reply, kept as debugging evidence. */
   steps: AgentStep[]
+  /** Summed `usage` of every model reply; see {@link usageOf}. */
+  usage?: Record<string, number>
 }
 
 export interface AgentStep {
@@ -16,6 +20,16 @@ export interface AgentStep {
   output?: string
   runId?: string
   tool?: string
+}
+
+/**
+ * Observes each model request of {@link runAgent}, for example to emit
+ * Vieval `inference.*` events. Calls are best-effort reporting only.
+ */
+export interface AgentTelemetry {
+  failed: (error: unknown) => void
+  requested: (step: number) => void
+  responded: (reply: Reply, latencyMs: number) => void
 }
 
 /** The tools an episode exposes, and how to execute them. */
@@ -74,6 +88,8 @@ export interface Prompt {
 export interface Reply {
   calls: FunctionCall[]
   text: string
+  /** Token usage the endpoint reported, flattened by {@link usageOf}. */
+  usage?: Record<string, number>
 }
 
 /** What one tool call returns to the model: text plus optional images as data URLs. */
@@ -269,15 +285,26 @@ export async function runAgent(
   instruction: string,
   endpoint: ModelEndpoint,
   tools: AgentTools,
-  options: { maxSteps: number, signal: AbortSignal },
+  options: { maxSteps: number, signal: AbortSignal, telemetry?: AgentTelemetry },
 ): Promise<AgentResult> {
-  const result: AgentResult = { runIds: [], steps: [] }
+  const result: AgentResult = { modelRequests: 0, runIds: [], steps: [], usage: {} }
   const items: ConversationItem[] = [{ role: 'user', text: `Task: ${instruction}`, type: 'message' }]
   const definitions = [...tools.definitions, ...episodeTools]
 
   try {
     for (let step = 0; step < options.maxSteps; step += 1) {
+      options.telemetry?.requested(step)
+      const started = performance.now()
       const reply = await complete(endpoint, { instructions: systemPrompt, items: windowImages(items), tools: definitions }, options.signal)
+        .catch((error: unknown) => {
+          options.telemetry?.failed(error)
+          throw error
+        })
+      result.modelRequests = (result.modelRequests ?? 0) + 1
+      for (const [key, value] of Object.entries(reply.usage ?? {})) {
+        result.usage![key] = (result.usage![key] ?? 0) + value
+      }
+      options.telemetry?.responded(reply, performance.now() - started)
       if (reply.text !== '') {
         items.push({ role: 'assistant', text: reply.text, type: 'message' })
       }
@@ -313,6 +340,34 @@ export async function runAgent(
     throw new AgentRunError(result, error)
   }
   return result
+}
+
+/**
+ * Flattens a reply's numeric `usage` fields, one nested level deep, so
+ * Responses (`input_tokens`, `input_tokens_details.cached_tokens`,
+ * `output_tokens_details.reasoning_tokens`) and Chat Completions
+ * (`prompt_tokens`, `completion_tokens`, …) totals can be summed by key.
+ * `undefined` when the endpoint reported no usage.
+ */
+export function usageOf(body: unknown): Record<string, number> | undefined {
+  const usage = (body as null | { usage?: unknown })?.usage
+  if (usage == null || typeof usage !== 'object') {
+    return undefined
+  }
+  const flat: Record<string, number> = {}
+  for (const [key, value] of Object.entries(usage)) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      flat[key] = value
+    }
+    else if (value != null && typeof value === 'object') {
+      for (const [inner, number] of Object.entries(value)) {
+        if (typeof number === 'number' && Number.isFinite(number)) {
+          flat[`${key}.${inner}`] = number
+        }
+      }
+    }
+  }
+  return flat
 }
 
 function chatMessages(prompt: Prompt): unknown[] {
@@ -357,6 +412,7 @@ function replyFrom(api: ModelApi, body: unknown): Reply {
     return {
       calls: (message?.tool_calls ?? []).map(call => ({ arguments: call.function.arguments, callId: call.id, name: call.function.name })),
       text: message?.content ?? '',
+      usage: usageOf(body),
     }
   }
   const output = (body as { output?: Array<{ arguments?: string, call_id?: string, content?: Array<{ text?: string, type: string }>, name?: string, type: string }> }).output ?? []
@@ -370,6 +426,7 @@ function replyFrom(api: ModelApi, body: unknown): Reply {
       .filter(part => part.type === 'output_text')
       .map(part => part.text ?? '')
       .join(''),
+    usage: usageOf(body),
   }
 }
 

@@ -2,7 +2,7 @@ import type { AgentTools, FunctionCall, ModelEndpoint } from './agent'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { AgentRunError, complete, modelApiFrom, requestFor, runAgent } from './agent'
+import { AgentRunError, complete, modelApiFrom, requestFor, runAgent, usageOf } from './agent'
 
 const endpoint = (api: ModelEndpoint['api']): ModelEndpoint => ({ api, apiKey: 'k', baseURL: 'http://proxy.test/v1/', model: 'm' })
 
@@ -68,6 +68,26 @@ describe('runAgent with Responses tools', () => {
         type: 'function_call_output',
       },
     ])
+  })
+
+  it('sums reply usage and reports every request to telemetry', async () => {
+    stubModel([
+      { output: [call('c1', 'invoke')], usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 40 }, output_tokens: 10, total_tokens: 110 } },
+      { output: [call('c2', 'done')], usage: { input_tokens: 150, input_tokens_details: { cached_tokens: 90 }, output_tokens: 5, total_tokens: 155 } },
+    ])
+    const { tools } = stubTools()
+    const events: string[] = []
+    const telemetry = {
+      failed: () => events.push('failed'),
+      requested: (step: number) => events.push(`requested ${step}`),
+      responded: (reply: { usage?: Record<string, number> }) => events.push(`responded ${reply.usage?.total_tokens}`),
+    }
+
+    const result = await runAgent('do it', endpoint('responses'), tools, { maxSteps: 3, signal: AbortSignal.timeout(10_000), telemetry })
+
+    expect(result.modelRequests).toBe(2)
+    expect(result.usage).toEqual({ 'input_tokens': 250, 'input_tokens_details.cached_tokens': 130, 'output_tokens': 15, 'total_tokens': 265 })
+    expect(events).toEqual(['requested 0', 'responded 110', 'requested 1', 'responded 155'])
   })
 
   it('ends with FAIL when the model calls fail', async () => {
@@ -280,5 +300,13 @@ describe('modelApiFrom', () => {
 
   it('rejects an unknown API instead of silently falling back', () => {
     expect(() => modelApiFrom('completions')).toThrow(/responses" or "chat/)
+  })
+})
+
+describe('usageOf', () => {
+  it('flattens Chat Completions usage and ignores a reply without usage', () => {
+    expect(usageOf({ usage: { completion_tokens: 3, completion_tokens_details: { reasoning_tokens: 2 }, prompt_tokens: 9, total_tokens: 12 } }))
+      .toEqual({ 'completion_tokens': 3, 'completion_tokens_details.reasoning_tokens': 2, 'prompt_tokens': 9, 'total_tokens': 12 })
+    expect(usageOf({ output: [] })).toBeUndefined()
   })
 })

@@ -1,7 +1,9 @@
+import type { Reply } from '../src/agent'
+
 import process from 'node:process'
 
 import { caseOf, describeTask, expect } from 'vieval'
-import { modelFromRun, openaiFromRunContext } from 'vieval/plugins/chat-models'
+import { emitChatModelErrorTelemetry, emitChatModelRequestTelemetry, emitChatModelResponseTelemetry, modelFromRun, openaiFromRunContext } from 'vieval/plugins/chat-models'
 
 import { modelApiFrom } from '../src/agent'
 import { loadCases } from '../src/cases'
@@ -29,7 +31,19 @@ describeTask('osworld', () => {
       context.recordMetric('osworld.model.api', api)
       context.recordMetric('osworld.repeat', repeat)
 
-      const result = await runEpisode(item, { api, apiKey, baseURL, model }, { repeat, signal: context.signal })
+      // Each model request becomes `inference.*` events with its usage and
+      // latency, which the Vieval viewer shows on the case's Inference tab.
+      const provider = { id: 'openai', model }
+      const telemetry = {
+        failed: (error: unknown) => emitChatModelErrorTelemetry(context, { error, provider }),
+        requested: (step: number) => emitChatModelRequestTelemetry(context, { data: { api, step }, provider }),
+        responded: (reply: Reply, latencyMs: number) => emitChatModelResponseTelemetry(context, {
+          latencyMs,
+          provider,
+          response: { toolCalls: reply.calls.map(call => ({ arguments: call.arguments, id: call.callId, name: call.name })), usage: reply.usage },
+        }),
+      }
+      const result = await runEpisode(item, { api, apiKey, baseURL, model }, { repeat, signal: context.signal, telemetry })
       context.recordMetric('osworld.pod', result.podName)
       context.recordMetric('osworld.evidence', result.evidenceDirectory)
       context.recordMetric('osworld.agent.steps', result.agent.steps.length)
@@ -40,6 +54,12 @@ describeTask('osworld', () => {
       context.recordMetric('osworld.agent.terminal_steps', terminalUse.terminalSteps)
       context.recordMetric('osworld.agent.script_steps', terminalUse.scriptSteps)
       context.recordMetric('osworld.agent.gui_only', terminalUse.terminalSteps === 0)
+      // Summed token usage of the episode, keyed by the endpoint's usage
+      // fields (`input_tokens`, `output_tokens_details.reasoning_tokens`, …).
+      context.recordMetric('osworld.model.requests', result.agent.modelRequests ?? 0)
+      for (const [key, value] of Object.entries(result.agent.usage ?? {})) {
+        context.recordMetric(`osworld.model.usage.${key}`, value)
+      }
       context.recordMetric('auv.run.ids', result.agent.runIds)
       context.recordMetric('auv.linux_binary.sha256', result.auvLinuxSha256)
       context.recordScore(result.score, 'exact')
