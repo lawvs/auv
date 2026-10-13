@@ -14,9 +14,9 @@ use crate::{
   session::{backend, invalid},
 };
 use auv_driver_common::{
-  ClickOptions, CoordinateSpace, DisturbanceLevel, DriverError, DriverResult, InputActionResult, InputAttempt, InputDeliveryPath,
-  InputPolicy, InputTarget, MoveMouseRequest, Point, Rect, ScreenPoint, Scroll, ScrollDeliveryCandidate, ScrollOptions, Size, Window,
-  WindowPoint, WindowRef, WindowSelector,
+  Activation, Capture, CaptureOptions, ClickOptions, CoordinateSpace, DisturbanceLevel, DriverError, DriverResult, InputActionResult,
+  InputAttempt, InputDeliveryPath, InputPolicy, InputTarget, MoveMouseRequest, Point, Position, Rect, ScreenPoint, Scroll,
+  ScrollDeliveryCandidate, ScrollOptions, Size, Window, WindowPoint, WindowRef, WindowSelector,
   input::MouseButton,
   selector::{AppSelector, TextMatcher},
 };
@@ -356,6 +356,40 @@ impl WindowApi<'_> {
     let ewmh = self.session.lock_windows()?;
     let clients = ewmh.clients()?;
     resolve_from(&clients, &selector, ewmh.active_window()?, &aliases).map(|client| client.window.clone())
+  }
+
+  /// Captures the window's current frame as a crop of its monitor, after
+  /// activating it when `options.activation` asks to.
+  ///
+  /// The crop is bound to the window: its origin is the window point of the
+  /// crop's top-left (0, 0 unless the frame extends past the monitor). Without
+  /// activation, overlapping windows appear in it, as with the Wayland crop.
+  pub fn capture_with(&self, window: &Window, options: CaptureOptions) -> DriverResult<Capture> {
+    if options.display.is_some() || options.region.is_some() || options.window.is_some() {
+      return Err(invalid("window.capture_with does not accept display, region, or nested window capture options"));
+    }
+    let recipient = self.recipient(&InputTarget::Window(window.clone()))?.expect("window target resolves a recipient");
+    let frame = {
+      let ewmh = self.session.lock_windows()?;
+      if let Activation::ActivateFirst { settle } = options.activation {
+        ewmh.activate(recipient.xid)?;
+        std::thread::sleep(settle);
+      }
+      ewmh.client(recipient.xid)?.ok_or_else(|| not_found(recipient.xid))?.window.frame
+    };
+    let mut capture = crate::capture::capture_frame(self.session, frame)?;
+    capture.origin = Some(Position::in_window(
+      &window.reference,
+      WindowPoint::new(capture.bounds.origin.x - frame.origin.x, capture.bounds.origin.y - frame.origin.y),
+    ));
+    capture.backend = "ewmh.frame+xcap.x11.crop".into();
+    capture.fallback_reason = Some("X11 window capture crops the window frame from its monitor; overlapping windows appear in it".into());
+    Ok(capture.at_resolution(options.resolution))
+  }
+
+  /// [`WindowApi::capture_with`] without activation.
+  pub fn capture(&self, window: &Window) -> DriverResult<Capture> {
+    self.capture_with(window, CaptureOptions::default())
   }
 
   /// Maps a point relative to the window frame's top-left onto root pixels.

@@ -628,4 +628,28 @@ fn ewmh_windows_resolve_activate_and_receive_targeted_input() {
   assert_eq!(end, covered);
   assert_eq!(result.attempts[0].path, InputDeliveryPath::WindowTargetedMouse);
   assert_eq!(result.focus_disturbance, DisturbanceLevel::Foreground);
+
+  // ROOT CAUSE: OSWorld agents ran `input.drag --target window:…`, which
+  // the Runner sends through the logical-mouse path; X11 rejected every
+  // window target there ("window-targeted mouse input is not supported").
+  // A window target now activates the window and drives foreground XTEST.
+  fs::remove_file(directory.join("AuvBeta.click")).unwrap();
+  let beta_window = find("AUV Beta").unwrap();
+  let point = windows.to_screen_point(&beta_window, WindowPoint::new(40.0, 80.0)).unwrap().point();
+  let request = MoveMouseRequest {
+    target: Some(InputTarget::Window(beta_window.clone())),
+    ..MoveMouseRequest::direct(point)
+  };
+  let (_, result) = input.drag_mouse(request, MouseButton::Left).unwrap();
+  wait_for(|| read_file(&directory, "AuvBeta.click").is_some());
+  assert_eq!(result.attempts[0].path, InputDeliveryPath::WindowTargetedMouse);
+  assert_eq!(result.focus_disturbance, DisturbanceLevel::Foreground);
+
+  // ROOT CAUSE: `window.capture` was unsupported on X11, so window.findText,
+  // waitForText, and clickText failed in OSWorld. It now crops the window's
+  // frame from its monitor and binds the crop to the window.
+  let capture = windows.capture(&beta_window).unwrap();
+  assert_eq!(capture.bounds, beta_window.frame);
+  assert_eq!((capture.image.width(), capture.image.height()), (beta_window.frame.size.width as u32, beta_window.frame.size.height as u32));
+  assert_eq!(capture.origin, Some(auv_driver_common::Position::in_window(&beta_window.reference, WindowPoint::new(0.0, 0.0))));
 }

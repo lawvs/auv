@@ -40,9 +40,10 @@ The daemon Runner uses the same selection. Display capture and foreground
 input are available there, including sampled movement/drag, bounded held
 buttons/keys, screen-point scrolling, and `input.pasteText`. With an EWMH
 window manager it also serves `window.list`/`window.resolve`, window-relative
-scrolling, clicks and drags, and application/window-targeted keyboard input
-(activate, confirm, then foreground XTEST; see below). Window capture, window
-OCR, and clipboard copy remain explicit errors. This does not make every higher-level Electron
+scrolling, clicks and drags, window-targeted pointer input, window capture
+(a crop of the window frame from its monitor, which window OCR reads), and
+application/window-targeted keyboard input (activate, confirm, then
+foreground XTEST; see below). Clipboard copy remains an explicit error. This does not make every higher-level Electron
 workflow X11-capable.
 
 ## Evidence

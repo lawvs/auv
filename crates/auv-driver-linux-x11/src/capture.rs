@@ -64,6 +64,39 @@ impl DisplayApi<'_> {
   }
 }
 
+/// Captures the part of `frame` (a window frame in root pixels) that lies on
+/// the monitor holding its center, and returns that crop with its root
+/// rectangle. Overlapping windows appear in the pixels: X11 without a
+/// compositor has no per-window image to read.
+pub(crate) fn capture_frame(session: &X11DriverSession, frame: Rect) -> DriverResult<Capture> {
+  session.check_environment()?;
+  let targets = monitors()?;
+  let center = (frame.origin.x + frame.size.width / 2.0, frame.origin.y + frame.size.height / 2.0);
+  let (monitor, display) = targets
+    .iter()
+    .find(|(_, display)| {
+      let d = display.frame;
+      center.0 >= d.origin.x && center.0 < d.origin.x + d.size.width && center.1 >= d.origin.y && center.1 < d.origin.y + d.size.height
+    })
+    .or_else(|| targets.iter().find(|(_, display)| display.is_primary))
+    .ok_or_else(|| auv_driver_common::DriverError::NotFound {
+      target: "X11 monitor holding the window".into(),
+    })?;
+  let d = display.frame;
+  let left = frame.origin.x.floor().max(d.origin.x);
+  let top = frame.origin.y.floor().max(d.origin.y);
+  let right = (frame.origin.x + frame.size.width).ceil().min(d.origin.x + d.size.width);
+  let bottom = (frame.origin.y + frame.size.height).ceil().min(d.origin.y + d.size.height);
+  if right <= left || bottom <= top {
+    return Err(invalid("the window is outside every X11 monitor; move or restore it before capturing"));
+  }
+  let clip = Rect::new(left, top, right - left, bottom - top);
+  let image = monitor
+    .capture_region((left - d.origin.x) as u32, (top - d.origin.y) as u32, clip.size.width as u32, clip.size.height as u32)
+    .map_err(backend)?;
+  Ok(capture(image, clip))
+}
+
 fn validate_options(options: &CaptureOptions) -> DriverResult<()> {
   if options.window.is_some() || !matches!(options.activation, Activation::KeepCurrent) {
     return Err(invalid("X11 display capture does not activate or target windows"));

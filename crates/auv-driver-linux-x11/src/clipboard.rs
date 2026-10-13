@@ -449,7 +449,11 @@ impl Owner {
   /// `TARGETS`); once it has, it gets `transfer` from the shortcut to request
   /// the text. A cold Chrome in a loaded VM asked for `TARGETS` several times
   /// and missed a flat one-second window.
-  pub(crate) fn wait_for_consumer(&self, start: Duration, transfer: Duration, recipient: Option<PasteRecipient>) -> DriverResult<()> {
+  ///
+  /// Returns which process read the text and after how long, plus any other
+  /// readers, as evidence for the result: delivery to the focused process
+  /// still does not prove the text landed in the intended control.
+  pub(crate) fn wait_for_consumer(&self, start: Duration, transfer: Duration, recipient: Option<PasteRecipient>) -> DriverResult<String> {
     let manager = self.connection.get_selection_owner(self.atoms.CLIPBOARD_MANAGER).map_err(backend)?.reply().map_err(backend)?.owner;
     let client = |window: Window| window & !self.resource_mask;
     let is_consumer = |window: Window| match recipient {
@@ -461,6 +465,7 @@ impl Owner {
     let mut seen: Vec<(Window, bool)> = Vec::new();
     let mut consumer_started = false;
     let mut found = false;
+    let mut read_after = Duration::ZERO;
     while !found {
       let remaining = deadline.saturating_duration_since(Instant::now());
       let fresh = self.wait(remaining, |state| (state.requests.len() > seen.len()).then(|| state.requests[seen.len()..].to_vec()))?;
@@ -471,7 +476,10 @@ impl Owner {
       // answering requests meanwhile.
       for &(window, text) in &fresh {
         if is_consumer(window) {
-          found |= text;
+          if text && !found {
+            found = true;
+            read_after = started.elapsed();
+          }
           if !consumer_started {
             consumer_started = true;
             deadline = started + transfer;
@@ -485,6 +493,14 @@ impl Owner {
       state.armed = false;
       state.requests.clear();
     }
+    // Name the other clients that read CLIPBOARD, so a log shows whether the
+    // focused application was slow or a mirror (mutter) was the only reader.
+    let pid_of =
+      |window: Window| self.client_pid(window).map_or_else(|| format!("client {:#x}", client(window)), |pid| format!("pid {pid}"));
+    let mut readers: Vec<String> =
+      seen.iter().filter(|&&(window, text)| text && !is_consumer(window)).map(|&(window, _)| pid_of(window)).collect();
+    readers.dedup();
+    let focused = recipient.and_then(|recipient| recipient.process_id).map_or_else(String::new, |pid| format!(" (pid {pid})"));
     if !found {
       if consumer_started {
         return Err(backend(format!(
@@ -492,15 +508,6 @@ impl Owner {
           transfer.as_millis()
         )));
       }
-      // Name the clients that did read CLIPBOARD, so a log shows whether the
-      // focused application was slow or a mirror (mutter) was the only reader.
-      let mut readers: Vec<String> = seen
-        .iter()
-        .filter(|(_, text)| *text)
-        .map(|&(window, _)| self.client_pid(window).map_or_else(|| format!("client {:#x}", client(window)), |pid| format!("pid {pid}")))
-        .collect();
-      readers.dedup();
-      let focused = recipient.and_then(|recipient| recipient.process_id).map_or_else(String::new, |pid| format!(" (pid {pid})"));
       let others = if readers.is_empty() {
         String::new()
       } else {
@@ -514,7 +521,12 @@ impl Owner {
     // Round trip so the SelectionNotify we sent is processed before any
     // later XTEST event from the input connection.
     self.connection.get_input_focus().map_err(backend)?.reply().map_err(backend)?;
-    Ok(())
+    let others = if readers.is_empty() {
+      String::new()
+    } else {
+      format!("; also read by {}", readers.join(", "))
+    };
+    Ok(format!("the focused application{focused} read the pasted text after {} ms{others}", read_after.as_millis()))
   }
 
   /// Puts `snapshot` back unless another client took CLIPBOARD meanwhile.

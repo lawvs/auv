@@ -297,9 +297,9 @@ pub struct WindowApi<'a> {
   session: &'a LocalDriverSession,
 }
 
-// TODO(x11-window-api): X11 implements EWMH list/resolve, point mapping, and
-// activated foreground wheel delivery. Window capture, text search, click, and
-// drag remain unsupported; add them only with an owner-approved slice.
+// NOTICE(x11-window-api): X11 implements EWMH list/resolve, point mapping,
+// activated foreground click, drag, and wheel delivery, and window capture as
+// a crop of the window frame from its monitor, which window text search reads.
 impl WindowApi<'_> {
   pub fn list(&self) -> DriverResult<Vec<Window>> {
     match self.session {
@@ -318,28 +318,36 @@ impl WindowApi<'_> {
   pub fn capture(&self, window: &Window) -> DriverResult<Capture> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().capture(window),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.capture")),
+      LocalDriverSession::LinuxX11(session) => session.window().capture(window),
     }
   }
 
   pub fn capture_with(&self, window: &Window, options: CaptureOptions) -> DriverResult<Capture> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().capture_with(window, options),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.capture_with")),
+      LocalDriverSession::LinuxX11(session) => session.window().capture_with(window, options),
     }
   }
 
   pub fn find_text(&self, window: &Window, query: &str, region: RelativeRect, wait: WaitOptions) -> DriverResult<OcrMatches> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().find_text(window, query, region, wait),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.find_text")),
+      LocalDriverSession::LinuxX11(session) => x11_find_window_text(session, window, query, region, wait),
     }
   }
 
   pub fn wait_text(&self, window: &Window, query: &str, region: RelativeRect, wait: WaitOptions) -> DriverResult<OcrMatches> {
     match self.session {
       LocalDriverSession::Linux(session) => session.window().wait_text(window, query, region, wait),
-      LocalDriverSession::LinuxX11(_) => Err(DriverError::unsupported("X11 window.wait_text")),
+      LocalDriverSession::LinuxX11(session) => {
+        let matches = x11_find_window_text(session, window, query, region, wait)?;
+        if matches.matches.is_empty() {
+          return Err(DriverError::NotFound {
+            target: format!("text {query:?} before timeout"),
+          });
+        }
+        Ok(matches)
+      }
     }
   }
 
@@ -650,5 +658,25 @@ mod tests {
   fn missing_desktop_environment_preserves_wayland_default() {
     assert_eq!(selected_backend(None, None), Backend::Wayland);
     assert_eq!(selected_backend(None, Some(OsStr::new(""))), Backend::Wayland);
+  }
+}
+
+/// Polls X11 window crops through the Linux OCR backend until `query`
+/// appears or `wait` expires, like the Wayland window text search.
+fn x11_find_window_text(
+  session: &auv_driver_linux_x11::X11DriverSession,
+  window: &Window,
+  query: &str,
+  region: RelativeRect,
+  wait: WaitOptions,
+) -> DriverResult<OcrMatches> {
+  let started = std::time::Instant::now();
+  loop {
+    let capture = session.window().capture(window)?;
+    let matches = auv_driver_linux::vision::find_text_in_capture(&capture, query, region, &Default::default())?;
+    if !matches.matches.is_empty() || started.elapsed() >= wait.timeout {
+      return Ok(matches);
+    }
+    std::thread::sleep(wait.poll_interval);
   }
 }

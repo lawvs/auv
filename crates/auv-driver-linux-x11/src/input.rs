@@ -205,10 +205,22 @@ impl InputApi<'_> {
     auv_driver_common::mouse_input::mouse_coordinator().move_to(mouse, point, Arc::new(X11MouseBackend::new(self.session.clone())))
   }
 
+  /// The pointer route for `target`. X11 has no window-bound pointer
+  /// delivery, so a window target is activated through EWMH first and then
+  /// driven with foreground XTEST, as `window.click` does; each result records
+  /// that fallback.
   fn pointer_backend(&self, target: Option<&InputTarget>) -> DriverResult<Arc<dyn MouseBackend>> {
     match target {
       None | Some(InputTarget::Foreground) => Ok(Arc::new(X11MouseBackend::new(self.session.clone()))),
-      Some(InputTarget::Window(_)) => Err(DriverError::unsupported("X11 window-targeted mouse input")),
+      Some(target @ InputTarget::Window(_)) => {
+        let recipient = self.session.window().recipient(target)?.expect("window target resolves a recipient");
+        self.session.window().prepare(&recipient)?;
+        Ok(Arc::new(X11MouseBackend {
+          session: self.session.clone(),
+          target: target.clone(),
+          activated: Some(recipient.describe()),
+        }))
+      }
       Some(InputTarget::Application { .. }) => Err(DriverError::unsupported("mouse input requires a window or foreground target")),
     }
   }
@@ -356,14 +368,22 @@ impl InputApi<'_> {
           &[Key::Control, Key::Unicode('v')]
         };
         with_keys(&mut *input, shortcut, |_| Ok(()))?;
-        owner.wait_for_consumer(PASTE_CONSUMER_START, PASTE_CONSUMER_TRANSFER, recipient)?;
+        let read = owner.wait_for_consumer(PASTE_CONSUMER_START, PASTE_CONSUMER_TRANSFER, recipient)?;
         if options.submit != TextSubmit::No {
           with_keys(&mut *input, &[Key::Return], |_| Ok(()))?;
         }
         std::thread::sleep(options.settle);
-        Ok(())
+        Ok(read)
       })();
-      let mut result = paste_result(outcome, owner.restore(&snapshot))?;
+      let read = outcome.as_ref().ok().cloned();
+      let mut result = paste_result(outcome.map(|_| ()), owner.restore(&snapshot))?;
+      if let Some(read) = read {
+        let attempt = &mut result.attempts[0];
+        attempt.message = Some(match attempt.message.take() {
+          Some(message) => format!("{read}; {message}"),
+          None => read,
+        });
+      }
       if let Some(terminal) = terminal {
         let note = format!("pasted with Ctrl+Shift+V because the active window is the terminal emulator {terminal}");
         let attempt = &mut result.attempts[0];
@@ -480,15 +500,41 @@ impl KeyboardBackend for HeldKeyboardBackend {
 
 struct X11MouseBackend {
   session: X11DriverSession,
+  target: InputTarget,
+  /// The window activated for a window target, named in each result.
+  activated: Option<String>,
 }
 
 impl X11MouseBackend {
   fn new(session: X11DriverSession) -> Self {
-    Self { session }
+    Self {
+      session,
+      target: InputTarget::Foreground,
+      activated: None,
+    }
+  }
+
+  fn delivered(&self) -> InputActionResult {
+    let mut result = delivered(true);
+    if let Some(window) = &self.activated {
+      result.attempts.insert(
+        0,
+        InputAttempt::failure(
+          InputDeliveryPath::WindowTargetedMouse,
+          format!("X11 has no window-bound pointer delivery; activated {window} through EWMH _NET_ACTIVE_WINDOW and delivered foreground XTEST events"),
+        ),
+      );
+      result.focus_disturbance = DisturbanceLevel::Foreground;
+    }
+    result
   }
 }
 
 impl MouseBackend for X11MouseBackend {
+  fn target(&self) -> InputTarget {
+    self.target.clone()
+  }
+
   fn current_position(&self) -> DriverResult<Point> {
     let (x, y) = self.session.lock_input()?.location().map_err(backend)?;
     Ok(Point::new(f64::from(x), f64::from(y)))
@@ -497,7 +543,7 @@ impl MouseBackend for X11MouseBackend {
   fn move_to(&self, point: Point, _held: Option<MouseButton>) -> DriverResult<InputActionResult> {
     let (x, y) = root_pixel(point)?;
     self.session.lock_input()?.move_mouse(x, y, Coordinate::Abs).map_err(backend)?;
-    Ok(delivered(true))
+    Ok(self.delivered())
   }
 
   fn button(&self, point: Point, button: MouseButton, down: bool) -> DriverResult<InputActionResult> {
@@ -514,7 +560,7 @@ impl MouseBackend for X11MouseBackend {
         },
       )
       .map_err(backend)?;
-    Ok(delivered(true))
+    Ok(self.delivered())
   }
 }
 
