@@ -213,3 +213,30 @@ fn desktop_entry_aliases_match_and_a_miss_lists_visible_application_ids() {
   let missing = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("org.gimp.GIMP")), None, &[]).unwrap_err();
   assert!(missing.to_string().contains("visible X11 application ids: Gimp-2.10, Google-chrome"), "{missing}");
 }
+
+// ROOT CAUSE:
+//
+// If a LibreOffice Calc dialog was active, an `application:libreoffice-calc`
+// target resolved to the Calc frame (the dialog's WM_CLASS differs), and the
+// window manager refused to activate the frame behind the modal dialog. Seven
+// OSWorld keyboard and click commands failed with "did not activate within
+// 2000ms" on 2026-10-13.
+//
+// The fix keeps input on the active window when the same process owns it.
+#[test]
+fn application_target_follows_the_active_dialog_of_the_same_process() {
+  let clients = vec![
+    client(0x602a7a, b"soffice\0Soffice\0", Some(40), "Format Cells"),
+    client(0x600096, b"libreoffice-calc\0libreoffice-calc\0", Some(40), "Untitled 1 - LibreOffice Calc"),
+    client(0x700001, b"gedit\0Gedit\0", Some(50), "notes"),
+  ];
+  assert_eq!(application_window(&clients, "libreoffice-calc", &[], Some(0x602a7a)).unwrap().xid, 0x602a7a);
+  // Another process's active window does not capture the target.
+  assert_eq!(application_window(&clients, "libreoffice-calc", &[], Some(0x700001)).unwrap().xid, 0x600096);
+  // Without a pid, ownership cannot be proven; the frame is used.
+  let unknown = vec![
+    client(0x602a7a, b"soffice\0Soffice\0", None, "Format Cells"),
+    client(0x600096, b"libreoffice-calc\0libreoffice-calc\0", None, "Calc"),
+  ];
+  assert_eq!(application_window(&unknown, "libreoffice-calc", &[], Some(0x602a7a)).unwrap().xid, 0x600096);
+}

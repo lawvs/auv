@@ -793,6 +793,15 @@ fn application_window<'a>(
   if let Some(client) = candidates.iter().find(|client| Some(client.xid) == active) {
     return Ok(client);
   }
+  // The active window of the same process is the application's too, even
+  // when its WM_CLASS differs: LibreOffice dialogs carry another class than
+  // the Calc frame. Activating the frame behind a modal dialog was refused by
+  // the WM ("did not activate … within 2000ms") and dropped OSWorld input.
+  if let Some(pid) = first.window.process_id
+    && let Some(client) = clients.iter().find(|client| Some(client.xid) == active && client.window.process_id == Some(pid))
+  {
+    return Ok(client);
+  }
   Ok(candidates.iter().find(|client| client.window.is_main).unwrap_or(first))
 }
 
