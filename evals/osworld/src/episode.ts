@@ -57,6 +57,13 @@ const cluster = {
 /** Guest port for the AUV daemon; 8080 belongs to OSWorld's VLC getter. */
 const guestAuvPort = 9847
 
+// NOTICE: Upstream OSWorld waits 20 s between the last action and
+// `env.evaluate()` (`lib_run_single.py`: "Wait for the environment to
+// settle"). Evaluating at once read Chrome's Cookies database before Chrome
+// committed a deletion (chrome/7b6c7e24 scored 0 with "No sites found" on
+// screen). OSWORLD_EVALUATION_SETTLE_SECONDS overrides it.
+const evaluationSettleMs = Number(process.env.OSWORLD_EVALUATION_SETTLE_SECONDS ?? 20) * 1000
+
 /** A host file uploaded to one guest path and verified there by SHA-256. */
 interface GuestFile {
   bytes: Uint8Array
@@ -162,6 +169,8 @@ export async function runEpisode(
       maxSteps: Number(process.env.OSWORLD_MAX_STEPS ?? 15),
       signal,
     })
+    // Let applications persist state before the evaluator reads it; see `evaluationSettleMs`.
+    await sleepWithAbort(evaluationSettleMs, signal)
     const evaluation = await bridge('evaluate', item, ports, evidenceDirectory, agent.lastAction, log, signal)
     const score = Number(evaluation.score)
 

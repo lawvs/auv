@@ -73,6 +73,7 @@ directly, and `pnpm doctor` probes it through the same request code.
 | `OSWORLD_MODEL` | `gpt-5.5` | Comma-separated; each model is one run-matrix row |
 | `OSWORLD_MAX_STEPS` | `15` | Model turns per episode |
 | `OSWORLD_CASE_TIMEOUT_MINUTES` | `60` | Wall-clock budget per episode; raise it with `OSWORLD_MAX_STEPS` |
+| `OSWORLD_EVALUATION_SETTLE_SECONDS` | `20` | Wait between the agent's last action and the evaluator, as upstream `lib_run_single.py` does, so apps persist state (Chrome commits cookies late) |
 | `OSWORLD_LOG_FILE` | `.vieval/logs/execution-<time>-<pid>.jsonl` | JSONL record of every command and Kubernetes action; nothing is printed to stdout |
 
 Other routes need no code change, only a different base URL:
