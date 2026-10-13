@@ -130,7 +130,8 @@ export async function runEpisode(
   await mkdir(evidenceDirectory, { recursive: true })
   // `scripts/summarize.ts` aggregates these records, including errors that
   // never reached the evaluator, so the denominator stays honest.
-  const record = { api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, harness, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
+  const maxSteps = Number(process.env.OSWORLD_MAX_STEPS ?? 15)
+  const record = { api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, harness, maxSteps, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
 
   const kubectl = ['--kubeconfig', kubeconfig, '--namespace', cluster.namespace]
   const log = { caseId, podName }
@@ -168,7 +169,7 @@ export async function runEpisode(
       throw new Error(`OSWorld setup failed for ${caseId}.`)
     }
     agent = await runAgent(harness, item.task.instruction, endpoint, auvTools, {
-      maxSteps: Number(process.env.OSWORLD_MAX_STEPS ?? 15),
+      maxSteps,
       signal,
       telemetry,
     })
