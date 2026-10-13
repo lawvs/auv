@@ -13,6 +13,8 @@
     "viewer": "vieval viewer ./.vieval/reports"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "catalog:",
+    "@earendil-works/pi-ai": "catalog:",
     "@moeru/std": "catalog:",
     "tinyexec": "catalog:",
     "vieval": "catalog:"

@@ -26,7 +26,9 @@ semantics, so no evaluator is re-implemented in TypeScript.
 | `eval/osworld.eval.ts` | One Vieval task; one case per task id, named `domain/id` |
 | `src/cases.ts` | Loads one case per task id, filtered by environment |
 | `src/episode.ts` | Pod, port-forward, AUV install/pairing, bridge calls, `result.json`, cleanup |
-| `src/agent.ts` | Model -> function call loop over the Responses or Chat API (not a planner) |
+| `src/agent.ts` | Shared agent contract (result, steps, tools), system prompt, and the direct Responses/Chat client `doctor` uses |
+| `src/agents/pi/` | Default loop on `@earendil-works/pi-agent-core` (not a planner) |
+| `src/agents/baseline/` | Frozen hand-written loop from the 2026-10-12/13 runs, run with `OSWORLD_AGENT=baseline` as a sanity check |
 | `src/auvTools.ts`, `src/mcp.ts` | AUV MCP `invoke` as the model's tool; attaches recorded screenshots to tool output |
 | `src/doctor.ts` | Prerequisite checks with reproduce commands -> `results/doctor.json` |
 | `src/summarize.ts` | Aggregates `result.json` files -> `results/summary.{json,md}` |
@@ -58,12 +60,13 @@ source commit; the Linux build must run on the guest's glibc (Ubuntu 22.04).
 ### Model endpoint
 
 The model is any OpenAI-compatible endpoint that accepts image input. By
-default `src/agent.ts` calls the Responses API (`POST /responses`, with
+default both agent loops call the Responses API (`POST /responses`, with
 `store: false` and the full history resent each step). Set
 `OSWORLD_OPENAI_API=chat` for an endpoint that only serves
 `/chat/completions`. Vieval's built-in `openai` inference executor carries the
-`baseURL`, `apiKey`, and model name; `src/agent.ts` calls the endpoint
-directly, and `pnpm doctor` probes it through the same request code.
+`baseURL`, `apiKey`, and model name; the agent loops call the endpoint
+directly. `pnpm doctor` probes it through the baseline loop's request code in
+`src/agent.ts`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -71,6 +74,9 @@ directly, and `pnpm doctor` probes it through the same request code.
 | `OSWORLD_OPENAI_API_KEY` | `no-key` placeholder | Needed only for keyed endpoints |
 | `OSWORLD_OPENAI_API` | `responses` | Wire API: `responses` or `chat` (`/chat/completions`) |
 | `OSWORLD_MODEL` | `gpt-5.5` | Comma-separated; each model is one run-matrix row |
+| `OSWORLD_AGENT` | `pi` | Agent loop: `pi` (`src/agents/pi/`, pi-agent-core) or `baseline` (`src/agents/baseline/`, the frozen hand-written loop, for sanity checks); recorded as `agentLoop` in `result.json` |
+| `OSWORLD_OBSERVE_AFTER_ACTION` | `true` | `pi` only: attach a screenshot to every successful `input.*`, `app.*`, or window pointer command |
+| `OSWORLD_IMAGES_IN_HISTORY` | `3` | `pi` only: screenshots kept in the transcript (`baseline` keeps 1) |
 | `OSWORLD_MAX_STEPS` | `15` | Model turns per episode |
 | `OSWORLD_CASE_TIMEOUT_MINUTES` | `60` | Wall-clock budget per episode; raise it with `OSWORLD_MAX_STEPS` |
 | `OSWORLD_EVALUATION_SETTLE_SECONDS` | `20` | Wait between the agent's last action and the evaluator, as upstream `lib_run_single.py` does, so apps persist state (Chrome commits cookies late) |
@@ -170,9 +176,10 @@ as 0), and pass@k.
   discoverable and pass through the same code path, but they are not proven
   until a summary row exists. Office, GIMP, and multi-app tasks are the
   hardest for this small agent.
-- **Agent:** no accessibility tree, no planner, and only the latest
-  screenshot plus earlier text replies. This is intentional. To evaluate
-  another agent, replace `src/agent.ts` and keep the episode contract
+- **Agent:** no accessibility tree and no planner. This is intentional. The
+  `baseline` loop keeps only the latest screenshot; the `pi` loop keeps three
+  and observes the screen after each action. To evaluate another agent, add a
+  loop under `src/agents/` and keep the episode contract
   (`instruction`, `invoke`, terminal `DONE`/`FAIL`). The recorded failures
   show the cost. In the VS Code theme task, the model opened Settings
   instead of the theme picker and split `Ctrl+K Ctrl+T` across two turns.

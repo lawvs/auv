@@ -10,7 +10,8 @@ import { join, resolve } from 'node:path'
 
 import { errorCauseFrom, errorMessageFrom, errorStackFrom, sleepWithAbort } from '@moeru/std'
 
-import { AgentRunError, runAgent } from './agent'
+import { AgentRunError } from './agent'
+import { agentLoopFrom, runAgent } from './agents'
 import { startAuvTools } from './auvTools'
 import { packageDirectory } from './cases'
 import { observeGuestCommand, recordKubernetesResource, runLoggedCommand, startLoggedCommand } from './executionLog'
@@ -128,7 +129,8 @@ export async function runEpisode(
   await mkdir(evidenceDirectory, { recursive: true })
   // `scripts/summarize.ts` aggregates these records, including errors that
   // never reached the evaluator, so the denominator stays honest.
-  const record = { api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
+  const agentLoop = agentLoopFrom(process.env.OSWORLD_AGENT)
+  const record = { agentLoop, api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
 
   const kubectl = ['--kubeconfig', kubeconfig, '--namespace', cluster.namespace]
   const log = { caseId, podName }
@@ -165,7 +167,7 @@ export async function runEpisode(
     if (setup.ok !== true) {
       throw new Error(`OSWorld setup failed for ${caseId}.`)
     }
-    agent = await runAgent(item.task.instruction, endpoint, auvTools, {
+    agent = await runAgent(agentLoop, item.task.instruction, endpoint, auvTools, {
       maxSteps: Number(process.env.OSWORLD_MAX_STEPS ?? 15),
       signal,
       telemetry,

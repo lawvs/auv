@@ -101,7 +101,7 @@ export interface ToolOutput {
 }
 
 /**
- * A failure inside {@link runAgent} that keeps the steps taken before it, so
+ * A failure inside an agent loop that keeps the steps taken before it, so
  * an episode error (for example a model request rejected by moderation) can
  * still be reviewed.
  */
@@ -116,14 +116,7 @@ export class AgentRunError extends Error {
 // stalled proxy stream held a case until Vieval's case timeout (p50 6 s,
 // p99 314 s, max 832 s in the 2026-10-11 test_nogdrive run). A timed-out
 // attempt is retried like a network error.
-const modelAttemptTimeoutMs = 180_000
-
-/**
- * Screenshots kept in the conversation. Older tool outputs keep their text.
- * One lossless 1920x1080 WebP capture is about 1.5 MB, and every step resends
- * the history, so the window stays at the latest image.
- */
-const imagesInHistory = 1
+export const modelAttemptTimeoutMs = 180_000
 
 /** Episode-ending tools. They belong to the eval, not to AUV: OSWorld scores infeasible tasks by `FAIL`. */
 export const episodeTools: FunctionTool[] = [
@@ -143,7 +136,7 @@ export const episodeTools: FunctionTool[] = [
 // trusted unverified pastes, and pasted terminal scripts into 30 GUI tasks
 // (shell skill, not AUV). The prompt names all three; `src/terminalUse.ts`
 // counts what remains. Keep it task-agnostic.
-const systemPrompt = `You operate an Ubuntu GNOME desktop through AUV tools to complete the user's task.
+export const systemPrompt = `You operate an Ubuntu GNOME desktop through AUV tools to complete the user's task.
 Look at the screen before acting: screenshots that AUV captures are attached to the tool result.
 Screen coordinates are logical pixels; the display is 1920x1080 at scale 1.
 Act with one tool call per reply. Call done when the task is complete, or fail if it cannot be done.
@@ -161,7 +154,7 @@ The user password is "password".`
  * overloaded (gpt-6.1-sol at 12 episodes, 2026-10-13). The schedule waits up
  * to about ten minutes before the episode fails.
  */
-const capacityBackoffMs = [15_000, 30_000, 60_000, 120_000, 120_000, 120_000, 120_000]
+export const capacityBackoffMs = [15_000, 30_000, 60_000, 120_000, 120_000, 120_000, 120_000]
 
 /**
  * Requests one model reply, retrying transient proxy failures.
@@ -263,83 +256,6 @@ export function requestFor(endpoint: ModelEndpoint, prompt: Prompt): { body: str
         }),
   }
   return { body: JSON.stringify(body), url: `${baseURL}/responses` }
-}
-
-/**
- * Runs a bounded model -> tool call loop.
- *
- * Call stack:
- *
- * {@link runEpisode}
- *   -> {@link runAgent}
- *     -> {@link complete} (`POST {baseURL}/responses` or `/chat/completions`)
- *     -> `tools.call` (AUV MCP `invoke`, or the eval's `done`/`fail`)
- *
- * Use when:
- * - a Vieval case needs a real model to drive AUV inside an OSWorld VM
- *
- * Returns:
- * - the AUV Run IDs, the model's calls, and the terminal action for the evaluator
- */
-export async function runAgent(
-  instruction: string,
-  endpoint: ModelEndpoint,
-  tools: AgentTools,
-  options: { maxSteps: number, signal: AbortSignal, telemetry?: AgentTelemetry },
-): Promise<AgentResult> {
-  const result: AgentResult = { modelRequests: 0, runIds: [], steps: [], usage: {} }
-  const items: ConversationItem[] = [{ role: 'user', text: `Task: ${instruction}`, type: 'message' }]
-  const definitions = [...tools.definitions, ...episodeTools]
-
-  try {
-    for (let step = 0; step < options.maxSteps; step += 1) {
-      options.telemetry?.requested(step)
-      const started = performance.now()
-      const reply = await complete(endpoint, { instructions: systemPrompt, items: windowImages(items), tools: definitions }, options.signal)
-        .catch((error: unknown) => {
-          options.telemetry?.failed(error)
-          throw error
-        })
-      result.modelRequests = (result.modelRequests ?? 0) + 1
-      for (const [key, value] of Object.entries(reply.usage ?? {})) {
-        result.usage![key] = (result.usage![key] ?? 0) + value
-      }
-      options.telemetry?.responded(reply, performance.now() - started)
-      if (reply.text !== '') {
-        items.push({ role: 'assistant', text: reply.text, type: 'message' })
-      }
-      // `parallel_tool_calls: false` asks for one call; anything extra is not
-      // executed and is not recorded, so history matches what ran.
-      const call = reply.calls[0]
-      if (call == null) {
-        result.steps.push({ message: reply.text })
-        items.push({ role: 'user', text: 'Call a tool to act on the computer, or call done or fail.', type: 'message' })
-        continue
-      }
-      items.push({ type: 'function_call', ...call })
-      if (call.name === 'done' || call.name === 'fail') {
-        result.steps.push({ message: reply.text || undefined, tool: call.name })
-        result.lastAction = call.name === 'done' ? 'DONE' : 'FAIL'
-        return result
-      }
-      const output = await tools.call(call, options.signal)
-      items.push({ callId: call.callId, images: output.images, text: output.text, type: 'function_call_output' })
-      if (output.runId != null) {
-        result.runIds.push(output.runId)
-      }
-      result.steps.push({
-        arguments: call.arguments,
-        message: reply.text || undefined,
-        output: output.text.slice(0, 2_000),
-        runId: output.runId,
-        tool: call.name,
-      })
-    }
-  }
-  catch (error) {
-    throw new AgentRunError(result, error)
-  }
-  return result
 }
 
 /**
@@ -454,16 +370,4 @@ function responsesItem(item: ConversationItem): unknown {
 function retryAfterMs(response: Response): number | undefined {
   const seconds = Number(response.headers.get('retry-after'))
   return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 300) * 1_000 : undefined
-}
-
-/** Keeps images only on the latest {@link imagesInHistory} tool outputs. */
-function windowImages(items: ConversationItem[]): ConversationItem[] {
-  let kept = 0
-  return items.toReversed().map((item) => {
-    if (item.type !== 'function_call_output' || item.images.length === 0) {
-      return item
-    }
-    kept += 1
-    return kept <= imagesInHistory ? item : { ...item, images: [], text: `${item.text}\n[Earlier screenshot omitted.]` }
-  }).toReversed()
 }
