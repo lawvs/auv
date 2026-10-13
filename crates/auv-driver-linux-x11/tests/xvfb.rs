@@ -418,6 +418,48 @@ fn clipboard_paste_delivers_text_and_restores_the_previous_clipboard() {
   assert_eq!(String::from_utf8(slow.join().unwrap()).unwrap(), "slow");
   assert_eq!(result.selected_path, InputDeliveryPath::ClipboardPaste);
   assert_eq!(owner(), x11rb::NONE);
+
+  // 8. ROOT CAUSE: Chrome 130 reads CLIPBOARD in several rounds per Ctrl+V
+  // and inserts a later one. The paste restored the clipboard right after the
+  // first text read (settle 0), so Chrome inserted the old clipboard while
+  // the result said the text was read. A consumer's later rounds within the
+  // quiet window now get the pasted text. This thread reads twice, 100 ms
+  // apart, from its focused window.
+  let (ready, focused) = std::sync::mpsc::channel();
+  let rounds = std::thread::spawn(move || {
+    use x11rb::protocol::{Event, xproto::InputFocus};
+    let (app, screen) = x11rb::connect(None).unwrap();
+    let root = app.setup().roots[screen].root;
+    let atom = |name: &[u8]| app.intern_atom(false, name).unwrap().reply().unwrap().atom;
+    let (utf8, property) = (atom(b"UTF8_STRING"), atom(b"_AUV_TEST_PASTE"));
+    let window = app.generate_id().unwrap();
+    app
+      .create_window(x11rb::COPY_DEPTH_FROM_PARENT, window, root, 0, 0, 10, 10, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new())
+      .unwrap();
+    app.map_window(window).unwrap();
+    app.flush().unwrap();
+    wait_for(|| app.get_window_attributes(window).unwrap().reply().unwrap().map_state == x11rb::protocol::xproto::MapState::VIEWABLE);
+    app.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME).unwrap();
+    wait_for(|| app.get_input_focus().unwrap().reply().unwrap().focus == window);
+    ready.send(()).unwrap();
+    wait_for(|| app.get_selection_owner(clipboard).unwrap().reply().unwrap().owner != x11rb::NONE);
+    let read = || {
+      app.convert_selection(window, clipboard, utf8, property, x11rb::CURRENT_TIME).unwrap();
+      app.flush().unwrap();
+      while !matches!(app.wait_for_event().unwrap(), Event::SelectionNotify(_)) {}
+      String::from_utf8(
+        app.get_property(true, window, property, x11rb::protocol::xproto::AtomEnum::ANY, 0, 1024).unwrap().reply().unwrap().value,
+      )
+      .unwrap()
+    };
+    let first = read();
+    std::thread::sleep(Duration::from_millis(100));
+    (first, read())
+  });
+  focused.recv().unwrap();
+  input.paste_text(submit("rounds")).unwrap();
+  assert_eq!(rounds.join().unwrap(), ("rounds".to_string(), "rounds".to_string()));
+  assert_eq!(owner(), x11rb::NONE);
 }
 
 /// One managed Tk window whose Entry reports submitted text and whose Listbox

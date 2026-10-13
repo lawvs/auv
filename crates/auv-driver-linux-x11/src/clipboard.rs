@@ -59,6 +59,13 @@ const OWNER_TIMEOUT: Duration = Duration::from_secs(1);
 // so a text near the server request limit still fits in one request.
 const REQUEST_HEADROOM: usize = 256;
 
+// NOTICE(x11-paste-drain): after the consumer's first text read, a paste
+// keeps CLIPBOARD until the consumer has made no request for 200 ms, at most
+// two seconds. Chrome 130 in OSWorld finished its read rounds within 36 ms;
+// raise these only with evidence of a consumer that reads later.
+const PASTE_QUIET: Duration = Duration::from_millis(200);
+const PASTE_DRAIN_LIMIT: Duration = Duration::from_secs(2);
+
 const MARKER_BARRIER: u32 = 0;
 const MARKER_ARM: u32 = 1;
 const MARKER_SHUTDOWN: u32 = 2;
@@ -487,6 +494,25 @@ impl Owner {
         }
       }
       seen.extend(fresh);
+    }
+    // Keep serving until the consumer goes quiet: Chrome 130 reads CLIPBOARD
+    // in several rounds per Ctrl+V (TARGETS x4 + UTF8_STRING, for ~36 ms) and
+    // inserts a later round. Restoring after the first read pasted the old
+    // clipboard instead, while the result claimed delivery.
+    if found {
+      let cap = Instant::now() + PASTE_DRAIN_LIMIT;
+      let mut quiet_until = Instant::now() + PASTE_QUIET;
+      loop {
+        let remaining = quiet_until.min(cap).saturating_duration_since(Instant::now());
+        let fresh = self.wait(remaining, |state| (state.requests.len() > seen.len()).then(|| state.requests[seen.len()..].to_vec()))?;
+        let Some(fresh) = fresh else {
+          break;
+        };
+        if fresh.iter().any(|&(window, _)| is_consumer(window)) {
+          quiet_until = Instant::now() + PASTE_QUIET;
+        }
+        seen.extend(fresh);
+      }
     }
     {
       let mut state = self.shared.lock()?;
