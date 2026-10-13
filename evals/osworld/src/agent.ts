@@ -137,11 +137,13 @@ A completed AUV command means the input was delivered, not that it had the inten
 The user password is "password".`
 
 /**
- * Waits between attempts while the proxy has no capacity (429, 503).
+ * Waits between attempts while the proxy has no capacity (429, 502, 503).
  *
  * NOTICE: cliproxyapi answers 503 `auth_unavailable` while every Codex
- * account cools down, which lasted minutes in the 2026-10-12 run. The
- * schedule waits up to about ten minutes before the episode fails.
+ * account cools down, which lasted minutes in the 2026-10-12 run, and relays
+ * the upstream's 502 `service_unavailable_error` when the model is
+ * overloaded (gpt-6.1-sol at 12 episodes, 2026-10-13). The schedule waits up
+ * to about ten minutes before the episode fails.
  */
 const capacityBackoffMs = [15_000, 30_000, 60_000, 120_000, 120_000, 120_000, 120_000]
 
@@ -150,8 +152,8 @@ const capacityBackoffMs = [15_000, 30_000, 60_000, 120_000, 120_000, 120_000, 12
  *
  * Network errors, attempts over three minutes, 408, and other 5xx are retried
  * at most three times with a short linear backoff; cliproxyapi answers 408
- * when its upstream stream closes before `response.completed`. 429 and 503
- * mean no capacity and wait longer, honoring `Retry-After`. Other HTTP errors
+ * when its upstream stream closes before `response.completed`. 429, 502, and
+ * 503 mean no capacity and wait longer, honoring `Retry-After`. Other HTTP errors
  * fail the case immediately.
  *
  * Use when:
@@ -180,7 +182,7 @@ export async function complete(endpoint: ModelEndpoint, prompt: Prompt, signal: 
       return outcome.reply
     }
     const response = outcome?.response
-    if (response != null && (response.status === 429 || response.status === 503) && capacityWaits < capacityBackoffMs.length) {
+    if (response != null && [429, 502, 503].includes(response.status) && capacityWaits < capacityBackoffMs.length) {
       await sleepWithAbort(retryAfterMs(response) ?? capacityBackoffMs[capacityWaits], signal)
       capacityWaits += 1
       continue

@@ -216,6 +216,28 @@ describe('complete', () => {
     expect(calls).toBe(6)
   })
 
+  // ROOT CAUSE:
+  //
+  // If the upstream model was overloaded, cliproxyapi relayed 502
+  // `service_unavailable_error`. 502 counted as a short transient error, so
+  // three quick retries gave up and 4 of 55 gpt-6.1-sol episodes errored.
+  //
+  // The fix waits out 502 like 503.
+  it('waits out an overloaded upstream model', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      return calls <= 5
+        ? Response.json({ error: { code: 'server_is_overloaded', type: 'service_unavailable_error' } }, { status: 502 })
+        : Response.json({ output: [{ content: [{ text: 'ok', type: 'output_text' }], type: 'message' }] })
+    }))
+    const reply = complete(endpoint('responses'), { items: [] }, new AbortController().signal)
+    await vi.runAllTimersAsync()
+    await expect(reply).resolves.toEqual({ calls: [], text: 'ok' })
+    expect(calls).toBe(6)
+  })
+
   it('honors Retry-After from a rate-limited proxy', async () => {
     vi.useFakeTimers()
     let calls = 0
