@@ -4,7 +4,7 @@ import { AgentRunError, complete, episodeTools, systemPrompt } from '../../agent
 
 // NOTICE: This is the hand-written Responses/Chat Completions loop the
 // 2026-10-12 (gpt-5.5) and 2026-10-13 (gpt-6.1-sol, 221/312 non-proxy) runs
-// used. It stays frozen as a sanity-check baseline (`OSWORLD_AGENT=baseline`)
+// used. It stays frozen as a sanity-check baseline (`OSWORLD_HARNESS=baseline`)
 // for the pi loop in `../pi/`: change it only to keep it compiling against the
 // shared contract in `../../agent.ts`, not to improve it.
 

@@ -6,6 +6,7 @@ import { caseOf, describeTask, expect } from 'vieval'
 import { emitChatModelErrorTelemetry, emitChatModelRequestTelemetry, emitChatModelResponseTelemetry, modelFromRun, openaiFromRunContext } from 'vieval/plugins/chat-models'
 
 import { modelApiFrom } from '../src/agent'
+import { harnessFrom } from '../src/agents'
 import { loadCases } from '../src/cases'
 import { runEpisode } from '../src/episode'
 import { terminalUseOf } from '../src/terminalUse'
@@ -23,6 +24,7 @@ describeTask('osworld', () => {
     caseOf(`${item.domain}/${item.task.id}`, async (context) => {
       const { apiKey = '', baseURL = 'https://api.openai.com/v1', model } = openaiFromRunContext(modelFromRun(context, { axis: 'model' }))
       const repeat = Number(context.task.matrix.run.repeat ?? 1)
+      const harness = harnessFrom(context.task.matrix.run.harness ?? 'pi')
       context.recordMetric('osworld.domain', item.domain)
       context.recordMetric('osworld.task.file', item.file)
       context.recordMetric('osworld.evaluator.func', JSON.stringify(item.task.evaluator.func))
@@ -30,6 +32,7 @@ describeTask('osworld', () => {
       context.recordMetric('osworld.model', model)
       context.recordMetric('osworld.model.api', api)
       context.recordMetric('osworld.repeat', repeat)
+      context.recordMetric('osworld.harness', harness)
 
       // Each model request becomes `inference.*` events with its usage and
       // latency, which the Vieval viewer shows on the case's Inference tab.
@@ -43,7 +46,7 @@ describeTask('osworld', () => {
           response: { toolCalls: reply.calls.map(call => ({ arguments: call.arguments, id: call.callId, name: call.name })), usage: reply.usage },
         }),
       }
-      const result = await runEpisode(item, { api, apiKey, baseURL, model }, { repeat, signal: context.signal, telemetry })
+      const result = await runEpisode(item, { api, apiKey, baseURL, model }, { harness, repeat, signal: context.signal, telemetry })
       context.recordMetric('osworld.pod', result.podName)
       context.recordMetric('osworld.evidence', result.evidenceDirectory)
       context.recordMetric('osworld.agent.steps', result.agent.steps.length)

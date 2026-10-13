@@ -22,13 +22,13 @@ semantics, so no evaluator is re-implemented in TypeScript.
 | --- | --- |
 | `tasks/<domain>/<id>.json` | Upstream task JSON, byte-for-byte, from `scripts/sync-osworld` |
 | `tasks/test_*.json`, `tasks/REVISION` | Upstream task-set indexes (the "cases" per domain) and the pinned revision |
-| `vieval.config.ts` | OpenAI-compatible models (`ChatModels`), `model` x `repeat` run matrix, concurrency |
+| `vieval.config.ts` | OpenAI-compatible models (`ChatModels`), `harness` x `model` x `repeat` run matrix, concurrency |
 | `eval/osworld.eval.ts` | One Vieval task; one case per task id, named `domain/id` |
 | `src/cases.ts` | Loads one case per task id, filtered by environment |
 | `src/episode.ts` | Pod, port-forward, AUV install/pairing, bridge calls, `result.json`, cleanup |
 | `src/agent.ts` | Shared agent contract (result, steps, tools), system prompt, and the direct Responses/Chat client `doctor` uses |
 | `src/agents/pi/` | Default loop on `@earendil-works/pi-agent-core` (not a planner) |
-| `src/agents/baseline/` | Frozen hand-written loop from the 2026-10-12/13 runs, run with `OSWORLD_AGENT=baseline` as a sanity check |
+| `src/agents/baseline/` | Frozen hand-written loop from the 2026-10-12/13 runs, run with `OSWORLD_HARNESS=baseline` as a sanity check |
 | `src/auvTools.ts`, `src/mcp.ts` | AUV MCP `invoke` as the model's tool; attaches recorded screenshots to tool output |
 | `src/doctor.ts` | Prerequisite checks with reproduce commands -> `results/doctor.json` |
 | `src/summarize.ts` | Aggregates `result.json` files -> `results/summary.{json,md}` |
@@ -74,7 +74,7 @@ directly. `pnpm doctor` probes it through the baseline loop's request code in
 | `OSWORLD_OPENAI_API_KEY` | `no-key` placeholder | Needed only for keyed endpoints |
 | `OSWORLD_OPENAI_API` | `responses` | Wire API: `responses` or `chat` (`/chat/completions`) |
 | `OSWORLD_MODEL` | `gpt-5.5` | Comma-separated; each model is one run-matrix row |
-| `OSWORLD_AGENT` | `pi` | Agent loop: `pi` (`src/agents/pi/`, pi-agent-core) or `baseline` (`src/agents/baseline/`, the frozen hand-written loop, for sanity checks); recorded as `agentLoop` in `result.json` |
+| `OSWORLD_HARNESS` | `pi` | Comma-separated agent loops; each is one run-matrix row (`harness` axis): `pi` (`src/agents/pi/`, pi-agent-core) or `baseline` (`src/agents/baseline/`, the frozen hand-written loop, for sanity checks). Recorded as `harness` in `result.json` |
 | `OSWORLD_OBSERVE_AFTER_ACTION` | `true` | `pi` only: attach a screenshot to every successful `input.*`, `app.*`, or window pointer command |
 | `OSWORLD_IMAGES_IN_HISTORY` | `3` | `pi` only: screenshots kept in the transcript (`baseline` keeps 1) |
 | `OSWORLD_MAX_STEPS` | `15` | Model turns per episode |

@@ -12,6 +12,13 @@ const parallel = Number(process.env.OSWORLD_CONCURRENCY ?? 1)
 // (default: local cliproxyapi). Each becomes one run-matrix row.
 const models = (process.env.OSWORLD_MODEL ?? 'gpt-5.5').split(',').map(model => model.trim()).filter(Boolean)
 
+// Agent loops to compare, comma-separated (`pi`, `baseline`); each becomes one
+// run-matrix row, and `eval/osworld.eval.ts` validates the name.
+// NOTICE: Vieval loads this file with Node's native TypeScript support, which
+// cannot resolve extensionless or directory imports such as `./src/agents`, so
+// the list is parsed here instead of with `harnessesFrom`.
+const harnesses = (process.env.OSWORLD_HARNESS || 'pi').split(',').map(name => name.trim()).filter(Boolean)
+
 // Independent repetitions of every (case, model) pair. Each repetition is a
 // separate run-matrix row, so it gets its own fresh Pod and its own score.
 const repeat = Array.from({ length: Math.max(1, Number(process.env.OSWORLD_REPEAT ?? 1)) }, (_, index) => index + 1)
@@ -44,7 +51,7 @@ export default defineConfig({
       name: 'osworld-kubernetes',
       root: '.',
       runMatrix: {
-        extend: { model: models, repeat },
+        extend: { harness: harnesses, model: models, repeat },
       },
     },
   ],

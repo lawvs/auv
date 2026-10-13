@@ -1,4 +1,5 @@
 import type { AgentResult, AgentTelemetry, ModelEndpoint } from './agent'
+import type { Harness } from './agents'
 import type { OsworldCase } from './cases'
 
 import process from 'node:process'
@@ -11,7 +12,7 @@ import { join, resolve } from 'node:path'
 import { errorCauseFrom, errorMessageFrom, errorStackFrom, sleepWithAbort } from '@moeru/std'
 
 import { AgentRunError } from './agent'
-import { agentLoopFrom, runAgent } from './agents'
+import { runAgent } from './agents'
 import { startAuvTools } from './auvTools'
 import { packageDirectory } from './cases'
 import { observeGuestCommand, recordKubernetesResource, runLoggedCommand, startLoggedCommand } from './executionLog'
@@ -112,7 +113,7 @@ export function describeError(error: unknown): string {
 export async function runEpisode(
   item: OsworldCase,
   endpoint: ModelEndpoint,
-  { repeat, signal, telemetry }: { repeat: number, signal: AbortSignal, telemetry?: AgentTelemetry },
+  { harness, repeat, signal, telemetry }: { harness: Harness, repeat: number, signal: AbortSignal, telemetry?: AgentTelemetry },
 ): Promise<EpisodeResult> {
   const kubeconfig = requiredEnvironment('OSWORLD_KUBECONFIG')
   const auvBinary = resolve(requiredEnvironment('OSWORLD_AUV_LINUX_BINARY'))
@@ -125,12 +126,11 @@ export async function runEpisode(
   const caseId = item.task.id
   const podName = `osworld-${caseId.slice(0, 8)}-${randomBytes(3).toString('hex')}`
   const startedAt = new Date()
-  const evidenceDirectory = join(packageDirectory, '.vieval', 'episodes', caseId, `${startedAt.toISOString().replaceAll(':', '-')}-${endpoint.model}-r${repeat}`)
+  const evidenceDirectory = join(packageDirectory, '.vieval', 'episodes', caseId, `${startedAt.toISOString().replaceAll(':', '-')}-${endpoint.model}-${harness}-r${repeat}`)
   await mkdir(evidenceDirectory, { recursive: true })
   // `scripts/summarize.ts` aggregates these records, including errors that
   // never reached the evaluator, so the denominator stays honest.
-  const agentLoop = agentLoopFrom(process.env.OSWORLD_AGENT)
-  const record = { agentLoop, api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
+  const record = { api: endpoint.api, auvRuntimeSha256: runtime.sha256, domain: item.domain, harness, model: endpoint.model, podName, repeat, startedAt: startedAt.toISOString(), taskId: caseId }
 
   const kubectl = ['--kubeconfig', kubeconfig, '--namespace', cluster.namespace]
   const log = { caseId, podName }
@@ -167,7 +167,7 @@ export async function runEpisode(
     if (setup.ok !== true) {
       throw new Error(`OSWorld setup failed for ${caseId}.`)
     }
-    agent = await runAgent(agentLoop, item.task.instruction, endpoint, auvTools, {
+    agent = await runAgent(harness, item.task.instruction, endpoint, auvTools, {
       maxSteps: Number(process.env.OSWORLD_MAX_STEPS ?? 15),
       signal,
       telemetry,
