@@ -540,7 +540,7 @@ fn ewmh_windows_resolve_activate_and_receive_targeted_input() {
   assert!(alpha_window.reference.id.starts_with("x11:0x"), "{alpha_window:?}");
   // Tk derives WM_CLASS ("auvAlpha", "Auvalpha") from className.
   assert_eq!(alpha_window.app_name.as_deref(), Some("Auvalpha"));
-  assert_eq!(alpha_window.app_bundle_id.as_deref(), Some("Auvalpha"));
+  assert_eq!(alpha_window.application_id.as_deref(), Some("Auvalpha"));
   assert_eq!(alpha_window.process_id, Some(alpha_pid));
   assert!(alpha_window.is_visible && alpha_window.is_main);
   assert!(alpha_window.frame.size.width >= 400.0 && alpha_window.frame.size.height >= 300.0, "{alpha_window:?}");
@@ -549,7 +549,7 @@ fn ewmh_windows_resolve_activate_and_receive_targeted_input() {
   assert_eq!(windows.list().unwrap().first().map(|window| window.reference.clone()), Some(beta_window.reference.clone()));
 
   // window.resolve: case-insensitive application ids, titles, frontmost.
-  let resolved = windows.resolve(WindowSelector::default().owned_by(App::bundle("AuvAlpha"))).unwrap();
+  let resolved = windows.resolve(WindowSelector::default().owned_by(App::id("AuvAlpha"))).unwrap();
   assert_eq!(resolved.reference, alpha_window.reference);
   let resolved = windows.resolve(WindowSelector::default().title_contains("beta")).unwrap();
   assert_eq!(resolved.reference, beta_window.reference);
@@ -558,7 +558,7 @@ fn ewmh_windows_resolve_activate_and_receive_targeted_input() {
     ..WindowSelector::default().owned_by(App::frontmost())
   };
   assert_eq!(windows.resolve(frontmost.clone()).unwrap().reference, beta_window.reference);
-  assert!(matches!(windows.resolve(WindowSelector::default().owned_by(App::bundle("missing"))), Err(DriverError::NotFound { .. })));
+  assert!(matches!(windows.resolve(WindowSelector::default().owned_by(App::id("missing"))), Err(DriverError::NotFound { .. })));
 
   let window_point = WindowPoint::new(5.0, 7.0);
   let screen = windows.to_screen_point(&alpha_window, window_point).unwrap();
@@ -577,11 +577,11 @@ fn ewmh_windows_resolve_activate_and_receive_targeted_input() {
 
   // Validation and dry-run bind the recipient without activating it.
   let missing = InputTarget::Application {
-    bundle_id: "missing".into(),
+    id: "missing".into(),
   };
   assert!(matches!(input.input_keyboard(&missing, vec![text("lost")], true).unwrap_err().cause, DriverError::NotFound { .. }));
   let alpha_app = InputTarget::Application {
-    bundle_id: "auvalpha".into(),
+    id: "auvalpha".into(),
   };
   assert!(input.input_keyboard(&alpha_app, vec![text("dry")], true).unwrap().is_none());
   let background = KeyboardInput::PressKeys {

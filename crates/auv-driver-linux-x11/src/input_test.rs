@@ -366,7 +366,7 @@ fn targeted_keyboard_batch_accepts_only_foreground_preferred_policy() {
     policy,
   };
   let application = InputTarget::Application {
-    bundle_id: "fixture".into(),
+    id: "fixture".into(),
   };
   // The X11 exception activates the recipient and delivers foreground XTEST,
   // so a targeted foreground-preferred batch validates.

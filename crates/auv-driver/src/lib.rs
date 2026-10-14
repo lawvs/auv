@@ -9,7 +9,7 @@ use std::ops::{Deref, DerefMut};
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{AccessibilityApi, ClipboardApi, DisplayApi, InputApi, PermissionApi, VisionApi, WindowApi};
+pub use linux::{AccessibilityApi, ApplicationApi, ClipboardApi, DisplayApi, InputApi, PermissionApi, VisionApi, WindowApi};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 use auv_driver_common::{DriverError, PlatformKind};

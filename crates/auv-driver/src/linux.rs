@@ -520,8 +520,6 @@ pub struct ApplicationApi<'a> {
 impl ApplicationApi<'_> {
   pub fn activate(&self, application_id: &str, settle: std::time::Duration) -> DriverResult<auv_driver_common::ApplicationActivationResult> {
     match self.session {
-      // TODO(wayland-app-activate): per-desktop backends (GNOME, KDE, wlroots)
-      // land in a follow-up slice; see `unsupported_activation`.
       LocalDriverSession::Linux(session) => session.applications().activate(application_id, settle),
       LocalDriverSession::LinuxX11(session) => session.window().activate_application(application_id, settle),
     }
@@ -589,6 +587,10 @@ impl LocalDriverSession {
 
   pub fn clipboard(&self) -> ClipboardApi<'_> {
     ClipboardApi { session: self }
+  }
+
+  pub fn applications(&self) -> ApplicationApi<'_> {
+    ApplicationApi { session: self }
   }
 }
 
@@ -661,6 +663,7 @@ mod tests {
     let _ = session.clipboard().snapshot();
     let _ = session.clipboard().restore("snapshot");
     let _ = session.clipboard().set_text("text");
+    let _ = session.applications().activate("org.example.App", std::time::Duration::ZERO);
   }
 
   #[test]
