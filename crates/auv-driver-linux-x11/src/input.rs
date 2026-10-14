@@ -402,32 +402,10 @@ impl InputApi<'_> {
   }
 }
 
-/// The application id of a terminal emulator among the active window's ids.
-///
-/// VTE terminals (GNOME Terminal, Tilix, Terminator, xfce4-terminal), Konsole,
-/// kitty, Alacritty, and WezTerm paste on Ctrl+Shift+V. xterm and urxvt bind
-/// neither shortcut by default and keep Ctrl+V, which then fails honestly.
-// NOTICE(x11-terminal-paste): matched by WM_CLASS/GTK id substrings, as
-// cua-driver's `terminal.rs` does; extend the list with evidence from a
-// terminal that pastes on Ctrl+Shift+V but is not recognized.
+/// The application id of a terminal emulator among the active window's ids;
+/// see `auv_driver_common::is_terminal_emulator`.
 fn terminal_application(application_ids: &[String]) -> Option<String> {
-  application_ids
-    .iter()
-    .find(|id| {
-      let id = id.to_ascii_lowercase();
-      [
-        "terminal",
-        "tilix",
-        "terminator",
-        "konsole",
-        "kitty",
-        "alacritty",
-        "wezterm",
-      ]
-      .iter()
-      .any(|name| id.contains(name))
-    })
-    .cloned()
+  application_ids.iter().find(|id| auv_driver_common::is_terminal_emulator(id)).cloned()
 }
 
 // NOTICE: an application answering Ctrl+V asks CLIPBOARD within a few

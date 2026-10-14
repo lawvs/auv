@@ -812,15 +812,10 @@ fn application_window<'a>(
 // hint rides in it ("application:x (visible application ids: …) was not
 // found"). Move it to a structured recovery field if NotFound gains one.
 fn missing_application(target: &str, clients: &[ClientWindow]) -> DriverError {
-  let mut ids: Vec<&str> =
-    clients.iter().filter(|client| client.window.is_visible).filter_map(|client| client.application_ids().next()).collect();
-  ids.sort_unstable_by_key(|id| id.to_lowercase());
-  ids.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-  let target = match ids.as_slice() {
-    [] => format!("{target} (no visible X11 application windows)"),
-    ids => format!("{target} (visible X11 application ids: {})", ids.join(", ")),
-  };
-  DriverError::NotFound { target }
+  let visible = clients.iter().filter(|client| client.window.is_visible).filter_map(|client| client.application_ids().next());
+  DriverError::NotFound {
+    target: format!("{target} ({})", auv_driver_common::window::visible_applications_hint(visible)),
+  }
 }
 
 #[cfg(test)]

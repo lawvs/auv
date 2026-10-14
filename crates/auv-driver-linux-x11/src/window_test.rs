@@ -78,11 +78,11 @@ fn application_id_prefers_gtk_application_id_then_wm_class() {
       ..facts(b"gnome-text-editor\0Gnome-text-editor\0")
     },
   );
-  assert_eq!(gtk.window.app_bundle_id.as_deref(), Some("org.gnome.TextEditor"));
+  assert_eq!(gtk.window.application_id.as_deref(), Some("org.gnome.TextEditor"));
   assert_eq!(gtk.window.app_name.as_deref(), Some("Gnome-text-editor"));
 
   let plain = client(2, b"navigator\0Firefox\0", Some(7), "Mozilla Firefox");
-  assert_eq!(plain.window.app_bundle_id.as_deref(), Some("Firefox"));
+  assert_eq!(plain.window.application_id.as_deref(), Some("Firefox"));
   assert_eq!(plain.window.reference.id, "x11:0x2");
   assert_eq!(plain.window.process_id, Some(7));
   assert_eq!(plain.window.coordinate_space, CoordinateSpace::Screen);
@@ -133,23 +133,23 @@ fn selectors_match_app_identity_title_and_frontmost() {
     client(1, b"navigator\0Firefox\0", Some(10), "Mozilla Firefox"),
   ];
 
-  let firefox = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("firefox")), None, &[]).unwrap();
+  let firefox = resolve_from(&clients, &WindowSelector::default().owned_by(App::id("firefox")), None, &[]).unwrap();
   assert_eq!(firefox.xid, 1);
-  let todo = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("editor")).title_contains("TODO"), None, &[]).unwrap();
+  let todo = resolve_from(&clients, &WindowSelector::default().owned_by(App::id("editor")).title_contains("TODO"), None, &[]).unwrap();
   assert_eq!(todo.xid, 2);
   assert!(matches!(
-    resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("editor")), None, &[]),
+    resolve_from(&clients, &WindowSelector::default().owned_by(App::id("editor")), None, &[]),
     Err(DriverError::InvalidInput { .. })
   ));
   assert!(matches!(
-    resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("missing")), None, &[]),
+    resolve_from(&clients, &WindowSelector::default().owned_by(App::id("missing")), None, &[]),
     Err(DriverError::NotFound { .. })
   ));
 
   // main_visible keeps top-most stacking order unless the active window ranks first.
   let main = WindowSelector {
     main_visible: true,
-    ..WindowSelector::default().owned_by(App::bundle("editor"))
+    ..WindowSelector::default().owned_by(App::id("editor"))
   };
   assert_eq!(resolve_from(&clients, &main, None, &[]).unwrap().xid, 3);
   assert_eq!(resolve_from(&clients, &main, Some(2), &[]).unwrap().xid, 2);
@@ -205,13 +205,13 @@ fn desktop_entry_aliases_match_and_a_miss_lists_visible_application_ids() {
   let aliases = ["gimp-2.10".to_string()];
   assert_eq!(application_window(&clients, "gimp", &aliases, None).unwrap().xid, 3);
   assert!(matches!(application_window(&clients, "gimp", &[], None), Err(DriverError::NotFound { .. })));
-  let selector = WindowSelector::default().owned_by(App::bundle("gimp"));
+  let selector = WindowSelector::default().owned_by(App::id("gimp"));
   assert_eq!(resolve_from(&clients, &selector, None, &aliases).unwrap().xid, 3);
 
   let missing = application_window(&clients, "com.google.Chrome", &[], None).unwrap_err().to_string();
-  assert_eq!(missing, "application:com.google.Chrome (visible X11 application ids: Gimp-2.10, Google-chrome) was not found");
-  let missing = resolve_from(&clients, &WindowSelector::default().owned_by(App::bundle("org.gimp.GIMP")), None, &[]).unwrap_err();
-  assert!(missing.to_string().contains("visible X11 application ids: Gimp-2.10, Google-chrome"), "{missing}");
+  assert_eq!(missing, "application:com.google.Chrome (visible applications: Gimp-2.10, Google-chrome) was not found");
+  let missing = resolve_from(&clients, &WindowSelector::default().owned_by(App::id("org.gimp.GIMP")), None, &[]).unwrap_err();
+  assert!(missing.to_string().contains("visible applications: Gimp-2.10, Google-chrome"), "{missing}");
 }
 
 // ROOT CAUSE:
