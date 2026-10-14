@@ -14,9 +14,10 @@ use crate::{
   session::{backend, invalid},
 };
 use auv_driver_common::{
-  Activation, Capture, CaptureOptions, ClickOptions, CoordinateSpace, DisturbanceLevel, DriverError, DriverResult, InputActionResult,
-  InputAttempt, InputDeliveryPath, InputPolicy, InputTarget, MoveMouseRequest, Point, Position, Rect, ScreenPoint, Scroll,
-  ScrollDeliveryCandidate, ScrollOptions, Size, Window, WindowPoint, WindowRef, WindowSelector,
+  Activation, ApplicationActivationMethod, ApplicationActivationResult, ApplicationActivationVerification, ApplicationIdKind, Capture,
+  CaptureOptions, ClickOptions, CoordinateSpace, DisturbanceLevel, DriverError, DriverResult, InputActionResult, InputAttempt,
+  InputDeliveryPath, InputPolicy, InputTarget, MoveMouseRequest, Point, Position, Rect, ScreenPoint, Scroll, ScrollDeliveryCandidate,
+  ScrollOptions, Size, Window, WindowPoint, WindowRef, WindowSelector,
   input::MouseButton,
   selector::{AppSelector, TextMatcher},
 };
@@ -522,6 +523,49 @@ impl WindowApi<'_> {
       return Err(invalid(format!("X11 {operation} point must be inside the current window frame")));
     }
     Ok((recipient, Point::new(frame.origin.x + local.x, frame.origin.y + local.y)))
+  }
+
+  /// Activates an application's window through EWMH `_NET_ACTIVE_WINDOW`.
+  ///
+  /// The window is the one an application target resolves to (WM_CLASS or
+  /// GTK application id, desktop-id aliases, a modal dialog of the same
+  /// process first). Activation waits until the WM reports it active and
+  /// keyboard focus is inside it; verification then re-reads the active
+  /// window after `settle`.
+  pub fn activate_application(&self, application_id: &str, settle: Duration) -> DriverResult<ApplicationActivationResult> {
+    let recipient = self
+      .recipient(&InputTarget::Application {
+        id: application_id.to_string(),
+      })?
+      .expect("application target resolves a recipient");
+    self.session.lock_windows()?.activate(recipient.xid)?;
+    if !settle.is_zero() {
+      std::thread::sleep(settle);
+    }
+    let ewmh = self.session.lock_windows()?;
+    let observed = |xid: u32| -> DriverResult<String> {
+      Ok(ewmh.client(xid)?.and_then(|client| client.application_ids().next().map(str::to_string)).unwrap_or_default())
+    };
+    let verification = match ewmh.active_window()? {
+      Some(active) if active == recipient.xid => ApplicationActivationVerification::VerifiedForeground {
+        observed_application_id: observed(active)?,
+      },
+      Some(active) => ApplicationActivationVerification::ForegroundMismatch {
+        observed_application_id: observed(active)?,
+      },
+      None => ApplicationActivationVerification::Unavailable {
+        reason: "the window manager reports no active window".to_string(),
+      },
+    };
+    Ok(ApplicationActivationResult {
+      requested_application_id: application_id.to_string(),
+      application_id_kind: ApplicationIdKind::WmClass,
+      method: ApplicationActivationMethod::EwmhActiveWindow,
+      activated_window: Some(WindowRef {
+        id: window_id(recipient.xid),
+      }),
+      verification,
+    })
   }
 
   /// Binds an application or window target to one client window without

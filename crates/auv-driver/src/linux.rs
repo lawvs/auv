@@ -508,6 +508,26 @@ pub struct ClipboardApi<'a> {
   session: &'a LocalDriverSession,
 }
 
+/// Application activation, matching the macOS and Windows `ApplicationApi`.
+///
+/// X11 activates through EWMH. Wayland fails as unsupported before delivering
+/// anything (see the Wayland session's `ApplicationApi`).
+#[derive(Clone, Copy, Debug)]
+pub struct ApplicationApi<'a> {
+  session: &'a LocalDriverSession,
+}
+
+impl ApplicationApi<'_> {
+  pub fn activate(&self, application_id: &str, settle: std::time::Duration) -> DriverResult<auv_driver_common::ApplicationActivationResult> {
+    match self.session {
+      // TODO(wayland-app-activate): per-desktop backends (GNOME, KDE, wlroots)
+      // land in a follow-up slice; see `unsupported_activation`.
+      LocalDriverSession::Linux(session) => session.applications().activate(application_id, settle),
+      LocalDriverSession::LinuxX11(session) => session.window().activate_application(application_id, settle),
+    }
+  }
+}
+
 impl ClipboardApi<'_> {
   pub fn snapshot(&self) -> DriverResult<String> {
     match self.session {

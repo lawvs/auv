@@ -695,3 +695,46 @@ fn ewmh_windows_resolve_activate_and_receive_targeted_input() {
   assert_eq!((capture.image.width(), capture.image.height()), (beta_window.frame.size.width as u32, beta_window.frame.size.height as u32));
   assert_eq!(capture.origin, Some(auv_driver_common::Position::in_window(&beta_window.reference, WindowPoint::new(0.0, 0.0))));
 }
+
+// app.activate on X11 resolves the application's window, activates it through
+// EWMH `_NET_ACTIVE_WINDOW`, and verifies the active window afterwards.
+#[test]
+#[ignore = "requires isolated Xvfb, an EWMH window manager (openbox), xprop, and python3-tk; manipulates the selected desktop"]
+fn ewmh_application_activation_foregrounds_and_verifies() {
+  let directory = std::env::temp_dir().join(format!("auv-x11-activate-test-{}", std::process::id()));
+  fs::create_dir(&directory).unwrap();
+  let alpha = spawn_managed_fixture(&directory, "AuvAlpha", "AUV Alpha", "400x300+20+20", true);
+  let _alpha = Fixture {
+    child: alpha,
+    directory: directory.clone(),
+  };
+  wait_for(|| directory.join("AuvAlpha.ready").exists());
+  let beta = spawn_managed_fixture(&directory, "AuvBeta", "AUV Beta", "400x300+300+200", false);
+  let _beta = Fixture {
+    child: beta,
+    directory: directory.join("unused"),
+  };
+  wait_for(|| directory.join("AuvBeta.ready").exists());
+
+  let session = X11Driver.open_local().unwrap();
+  let windows = session.window();
+  let find = |title: &str| -> Option<Window> { windows.list().unwrap().into_iter().find(|window| window.title.as_deref() == Some(title)) };
+  wait_for(|| find("AUV Alpha").is_some() && find("AUV Beta").is_some());
+
+  for (application, title) in [
+    ("AuvAlpha", "AUV Alpha"),
+    ("auvbeta", "AUV Beta"),
+    ("AuvAlpha", "AUV Alpha"),
+  ] {
+    let result = windows.activate_application(application, std::time::Duration::from_millis(100)).unwrap();
+    assert_eq!(result.method, auv_driver_common::ApplicationActivationMethod::EwmhActiveWindow);
+    assert_eq!(result.activated_window, Some(find(title).unwrap().reference), "{application}");
+    assert!(
+      matches!(result.verification, auv_driver_common::ApplicationActivationVerification::VerifiedForeground { .. }),
+      "{application}: {:?}",
+      result.verification
+    );
+    assert_eq!(windows.list().unwrap().first().and_then(|window| window.title.clone()).as_deref(), Some(title));
+  }
+  assert!(matches!(windows.activate_application("missing", std::time::Duration::ZERO), Err(DriverError::NotFound { .. })));
+}
