@@ -504,6 +504,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "auv-bench-osu"
+version = "0.0.34"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rosu-map",
+ "serde",
+ "serde_json",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "auv-cli"
 version = "0.0.34"
 dependencies = [

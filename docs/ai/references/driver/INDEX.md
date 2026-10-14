@@ -95,6 +95,7 @@ Count: **75**
 - [`2026-10-14-windows-window-clicktext.md`](2026-10-14-windows-window-clicktext.md): Direct invoke route for `window.clickText` on Windows under `InputPolicy::BackgroundOnly`, button OCR sizing fixes, coordinate translation verification (PR #323), typed `NotFound` negative path, and test-owned Win32 receiver evidence.
 - [qqmusic-background-control.md](qqmusic-background-control.md): Living document tracking QQ Music background control without stealing foreground focus across SMTC, CoreAudio, and UIA phases.
 - [windows-capture-parity.md](windows-capture-parity.md): Living document tracking Windows capture latency parity with macOS ScreenCaptureKit across baseline, WGC v1, and GPU-load degradation phases.
+- [`2026-10-14-osu-phase0-s1a-report.md`](2026-10-14-osu-phase0-s1a-report.md): osu! Windows 注入基准与即兴演奏器 Phase 0（执行器骨架、高精度 QPC 混合自旋、P99 0.525ms <= 16.6ms 门禁、50/50 边缘对账）与 S1 Part A（真实谱面 Tear Rain Normal 独立官方对账、4ms 轨迹与交替按键计划合成）验证报告。
 
 
 ## Related
