@@ -1,0 +1,27 @@
+{
+  "osr_header": {
+    "count_300": 595,
+    "count_100": 90,
+    "count_50": 0,
+    "count_miss": 0,
+    "score": 812291,
+    "max_combo": 1092
+  },
+  "simulator_judgements": {
+    "count_300": 685,
+    "count_100": 0,
+    "count_50": 0,
+    "count_miss": 0,
+    "total_objects": 685
+  },
+  "timing_metrics": {
+    "sample_count": 685,
+    "mean_ms": 36.95912408759124,
+    "std_ms": 0.5978739393684862,
+    "abs_p50_ms": 37.0,
+    "abs_p95_ms": 38.0,
+    "abs_p99_ms": 38.0,
+    "drift_slope_ms_per_sec": 0.0009608022480952037,
+    "drift_slope_ms_per_min": 0.05764813488571222
+  }
+}
