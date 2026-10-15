@@ -255,3 +255,26 @@ fn build_catmull_polyline(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
   result.dedup();
   result
 }
+
+#[cfg(test)]
+mod tests {
+  #[test]
+  fn test_object_295_curve_length() {
+    let fixture_path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/351190-cYsmix-Tear-Rain-Normal.osu");
+    let model = crate::parser::parse_beatmap_file(fixture_path).expect("parse tear rain");
+    let plan = crate::synthesizer::synthesize_plan(&model);
+    let pts: Vec<_> = plan.trajectory.iter().filter(|p| p.time_ms >= 238977.0 && p.time_ms <= 242500.0).collect();
+    println!("Total trajectory points: {}", pts.len());
+    let last_pt = pts.last().unwrap();
+    println!("Last trajectory point: at {} ms: ({:.1}, {:.1})", last_pt.time_ms, last_pt.x, last_pt.y);
+    let pt_mid = &pts[pts.len() / 2];
+    println!("Mid trajectory point: at {} ms: ({:.1}, {:.1})", pt_mid.time_ms, pt_mid.x, pt_mid.y);
+    let pt_80 = &pts[pts.len() * 8 / 10];
+    println!("80% trajectory point: at {} ms: ({:.1}, {:.1})", pt_80.time_ms, pt_80.x, pt_80.y);
+    assert!(pt_80.time_ms > 241700.0);
+    assert!(
+      (pt_80.x - last_pt.x).abs() > 5.0 || (pt_80.y - last_pt.y).abs() > 5.0,
+      "cursor must still be moving at 80% progress, not stuck at end!"
+    );
+  }
+}

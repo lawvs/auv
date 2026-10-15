@@ -107,8 +107,19 @@ pub fn parse_beatmap_str(content: &str) -> Result<BeatmapModel> {
           Some(SplineType::Catmull) | None => CurveType::Catmull,
         };
 
-        let control_points: Vec<(f64, f64)> =
-          slider.path.control_points().iter().map(|p| (f64::from(p.pos.x), f64::from(p.pos.y))).collect();
+        let head_x = f64::from(slider.pos.x);
+        let head_y = f64::from(slider.pos.y);
+        let mut control_points = Vec::with_capacity(slider.path.control_points().len());
+        for p in slider.path.control_points().iter().skip(1) {
+          let pt = (head_x + f64::from(p.pos.x), head_y + f64::from(p.pos.y));
+          if p.path_type.is_some() {
+            // Red anchor / segment delimiter: duplicated to preserve multi-bezier segment boundaries
+            control_points.push(pt);
+            control_points.push(pt);
+          } else {
+            control_points.push(pt);
+          }
+        }
 
         hit_objects.push(HitObject::Slider {
           x: f64::from(slider.pos.x),
