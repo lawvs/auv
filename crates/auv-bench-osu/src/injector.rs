@@ -8,8 +8,8 @@ use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-  INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE, MOUSEINPUT, SendInput,
-  VK_X, VK_Z,
+  INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+  MOUSEEVENTF_MOVE, MOUSEINPUT, SendInput, VK_X, VK_Z,
 };
 
 pub struct TimePeriodGuard {
@@ -112,6 +112,31 @@ impl PrecisionClock {
       }
     }
   }
+
+  /// Hybrid wait until `target_ms`: sleeps in small slices (up to 5ms) while checking for disturbance/cancel.
+  pub fn sleep_until_ms_with_cancel<F>(&self, target_ms: f64, mut check_cancel: F) -> Result<(), &'static str>
+  where
+    F: FnMut() -> Option<&'static str>,
+  {
+    loop {
+      if let Some(reason) = check_cancel() {
+        return Err(reason);
+      }
+      let current = self.elapsed_ms();
+      let remaining = target_ms - current;
+      if remaining <= 0.0 {
+        break;
+      }
+      if remaining > 10.0 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+      } else if remaining > 2.5 {
+        std::thread::sleep(std::time::Duration::from_millis((remaining - 2.0).floor() as u64));
+      } else {
+        std::hint::spin_loop();
+      }
+    }
+    Ok(())
+  }
 }
 
 impl Default for PrecisionClock {
@@ -124,13 +149,13 @@ impl Default for PrecisionClock {
 pub struct Win32InputActuator;
 
 impl Win32InputActuator {
-  /// Send keyboard key event (VK_Z or VK_X)
+  /// Send keyboard key event (VK_Z or VK_X) with hardware scan codes
   pub fn send_key(key: crate::synthesizer::KeyCode, is_down: bool) {
     #[cfg(target_os = "windows")]
     unsafe {
-      let vk = match key {
-        crate::synthesizer::KeyCode::K1 => VK_Z,
-        crate::synthesizer::KeyCode::K2 => VK_X,
+      let (vk, scan) = match key {
+        crate::synthesizer::KeyCode::K1 => (VK_Z, 0x2Cu16),
+        crate::synthesizer::KeyCode::K2 => (VK_X, 0x2Du16),
       };
       let flags = if is_down { 0 } else { KEYEVENTF_KEYUP.0 };
       let input = INPUT {
@@ -138,7 +163,7 @@ impl Win32InputActuator {
         Anonymous: INPUT_0 {
           ki: KEYBDINPUT {
             wVk: vk,
-            wScan: 0,
+            wScan: scan,
             dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(flags),
             time: 0,
             dwExtraInfo: 0,
@@ -150,6 +175,33 @@ impl Win32InputActuator {
     #[cfg(not(target_os = "windows"))]
     {
       let _ = (key, is_down);
+    }
+  }
+
+  /// Send mouse position with both SetCursorPos and SendInput absolute coordinates
+  pub fn send_mouse_pos(x: i32, y: i32, norm_x: u16, norm_y: u16) {
+    #[cfg(target_os = "windows")]
+    unsafe {
+      use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
+      let _ = SetCursorPos(x, y);
+      let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+          mi: MOUSEINPUT {
+            dx: norm_x as i32,
+            dy: norm_y as i32,
+            mouseData: 0,
+            dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+      let _ = (x, y, norm_x, norm_y);
     }
   }
 
@@ -175,6 +227,140 @@ impl Win32InputActuator {
     #[cfg(not(target_os = "windows"))]
     {
       let _ = (norm_x, norm_y);
+    }
+  }
+
+  /// Send left mouse click (down then up)
+  pub fn send_mouse_click() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+      let down = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+          mi: MOUSEINPUT {
+            dx: 0,
+            dy: 0,
+            mouseData: 0,
+            dwFlags: MOUSEEVENTF_LEFTDOWN,
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let up = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+          mi: MOUSEINPUT {
+            dx: 0,
+            dy: 0,
+            mouseData: 0,
+            dwFlags: MOUSEEVENTF_LEFTUP,
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let _ = SendInput(&[down], std::mem::size_of::<INPUT>() as i32);
+      std::thread::sleep(std::time::Duration::from_millis(30));
+      let _ = SendInput(&[up], std::mem::size_of::<INPUT>() as i32);
+    }
+  }
+
+  /// Send virtual key press (down then up)
+  pub fn send_virtual_key_press(vk: u16) {
+    #[cfg(target_os = "windows")]
+    unsafe {
+      use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
+      let down = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VIRTUAL_KEY(vk),
+            wScan: 0,
+            dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let up = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VIRTUAL_KEY(vk),
+            wScan: 0,
+            dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let _ = SendInput(&[down], std::mem::size_of::<INPUT>() as i32);
+      std::thread::sleep(std::time::Duration::from_millis(50));
+      let _ = SendInput(&[up], std::mem::size_of::<INPUT>() as i32);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+      let _ = vk;
+    }
+  }
+
+  /// Send Ctrl+R key combination for quick retry across gameplay and results screen
+  pub fn send_quick_retry() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+      use windows::Win32::UI::Input::KeyboardAndMouse::{KEYBD_EVENT_FLAGS, VK_CONTROL, VK_R};
+      let ctrl_down = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VK_CONTROL,
+            wScan: 0x1D,
+            dwFlags: KEYBD_EVENT_FLAGS(0),
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let r_down = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VK_R,
+            wScan: 0x13,
+            dwFlags: KEYBD_EVENT_FLAGS(0),
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let r_up = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VK_R,
+            wScan: 0x13,
+            dwFlags: KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let ctrl_up = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: VK_CONTROL,
+            wScan: 0x1D,
+            dwFlags: KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+          },
+        },
+      };
+      let _ = SendInput(&[ctrl_down, r_down], std::mem::size_of::<INPUT>() as i32);
+      std::thread::sleep(std::time::Duration::from_millis(50));
+      let _ = SendInput(&[r_up, ctrl_up], std::mem::size_of::<INPUT>() as i32);
     }
   }
 }

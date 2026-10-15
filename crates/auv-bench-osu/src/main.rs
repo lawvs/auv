@@ -3,9 +3,9 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use auv_bench_osu::{
-  PlayfieldProjection, evaluate_empirical_calibration, official_tear_rain_normal_ground_truth, parse_beatmap_file, reconcile_beatmap,
-  reconcile_tear_rain_fixture, run_actuator_smoke_bench, run_loopback_receiver_bench, run_projection_dual_candidate_gate,
-  simulate_plan_offline, synthesize_plan, verify_offline_safety_guard,
+  LivePlayerConfig, PlayfieldProjection, evaluate_empirical_calibration, execute_live_play, official_tear_rain_normal_ground_truth,
+  parse_beatmap_file, reconcile_beatmap, reconcile_tear_rain_fixture, run_actuator_smoke_bench, run_loopback_receiver_bench,
+  run_projection_dual_candidate_gate, simulate_plan_offline, synthesize_plan, verify_offline_safety_guard,
 };
 
 #[derive(Parser, Debug)]
@@ -76,6 +76,27 @@ enum Commands {
     /// Interval between edges in milliseconds
     #[arg(short, long, default_value_t = 4.0)]
     interval_ms: f64,
+  },
+  /// Execute a live play of a beatmap using the synthesized action plan
+  LivePlay {
+    /// Optional path to .osu file (defaults to bundled Tear Rain Normal fixture)
+    #[arg(short, long)]
+    path: Option<PathBuf>,
+    /// Window width in pixels
+    #[arg(short, long, default_value_t = 2560.0)]
+    width: f64,
+    /// Window height in pixels
+    #[arg(short = 'H', long, default_value_t = 1440.0)]
+    height: f64,
+    /// Lead-in / delay before first note in ms
+    #[arg(short, long, default_value_t = 0.0)]
+    lead_in_ms: f64,
+    /// Automatically focus osu! and click Retry button before playing
+    #[arg(long, default_value_t = true)]
+    click_retry: bool,
+    /// Output file for execution log JSON
+    #[arg(short, long)]
+    output: Option<PathBuf>,
   },
   /// Print full reconciliation and actuator smoke report
   Report,
@@ -265,6 +286,100 @@ fn main() -> Result<()> {
           "FAILED"
         }
       );
+    }
+    Commands::LivePlay {
+      path,
+      width,
+      height,
+      lead_in_ms,
+      click_retry,
+      output,
+    } => {
+      // Step 1: verify safety guard
+      println!("Checking offline safety guard...");
+      verify_offline_safety_guard().map_err(|e| anyhow::anyhow!("Safety guard abort: {e}"))?;
+      println!("Offline safety guard PASSED: lazer is in guest/offline mode.");
+
+      let fixture_path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/351190-cYsmix-Tear-Rain-Normal.osu"));
+      let p = path.as_ref().unwrap_or(&fixture_path);
+      let model = parse_beatmap_file(p)?;
+      println!("Loaded beatmap: {} - {} [{}]", model.artist, model.title, model.version);
+
+      // Step 2: projection calibration
+      let proj = PlayfieldProjection::for_capture(width, height, model.difficulty.circle_size)
+        .map_err(|e| anyhow::anyhow!("projection error: {e}"))?;
+      let samples = vec![
+        (0, (0.0, 0.0), proj.to_window_point(0.0, 0.0)),
+        (1, (256.0, 192.0), proj.to_window_point(256.0, 192.0)),
+        (2, (512.0, 384.0), proj.to_window_point(512.0, 384.0)),
+      ];
+      let calib = evaluate_empirical_calibration(&proj, width, height, &samples, 2.0);
+      println!("3-point projection calibration: max error = {:.3} px", calib.max_error_px);
+      if !calib.passed {
+        anyhow::bail!("Calibration gate FAILED (max error > 2.0 px). Aborting live play.");
+      }
+      println!("Calibration gate PASSED (<= 2.0 px).");
+
+      // Step 3: synthesize plan
+      let plan = synthesize_plan(&model);
+      println!(
+        "Synthesized plan: {} objects, {} key edges, {} trajectory points",
+        plan.header.total_objects,
+        plan.key_schedule.len(),
+        plan.trajectory.len()
+      );
+
+      // Step 4: live play execution
+      let cfg = LivePlayerConfig {
+        window_width: width,
+        window_height: height,
+        lead_in_delay_ms: lead_in_ms,
+        click_retry,
+      };
+
+      println!("\n=======================================================");
+      println!("READY FOR LIVE PLAY!");
+      println!("Target: {} - {} [{}]", model.artist, model.title, model.version);
+      println!("Duration: ~{:.1}s", model.last_object_time_ms().unwrap_or(0.0) / 1000.0);
+      println!("Auto Retry Click: {}", click_retry);
+      println!("Starting live play in 2 seconds... Keep hands off mouse/keyboard!");
+      println!("=======================================================");
+      for i in (1..=2).rev() {
+        println!("{}...", i);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+      }
+      println!("GO! EXECUTING ACTION PLAN...");
+
+      let report = execute_live_play(&model, &plan, &cfg, calib)?;
+
+      println!("\n=== Live Play Execution Complete ===");
+      println!("Map: {}", report.map_name);
+      println!("Duration: {:.2}s", report.duration_seconds);
+      println!("Edges Reconciled: {}/{} ({})", report.actual_edges, report.planned_edges, report.count_reconciled);
+      println!(
+        "Raw Deviation: P50={:.3}ms, P95={:.3}ms, P99={:.3}ms, Max={:.3}ms",
+        report.raw_p50_ms, report.raw_p95_ms, report.raw_p99_ms, report.raw_max_ms
+      );
+      println!(
+        "Compensated: P50={:.3}ms, P95={:.3}ms, P99={:.3}ms, Max={:.3}ms",
+        report.comp_p50_ms, report.comp_p95_ms, report.comp_p99_ms, report.comp_max_ms
+      );
+
+      let log_path = output.unwrap_or_else(|| PathBuf::from("tear_rain_live_edges.json"));
+      let json = serde_json::to_string_pretty(&report)?;
+      std::fs::write(&log_path, json)?;
+      println!("Saved execution log to {}", log_path.display());
+
+      // Step 5: Post-play result screen handling
+      println!("\nWaiting 4 seconds for result screen animation to settle...");
+      std::thread::sleep(std::time::Duration::from_secs(4));
+
+      #[cfg(target_os = "windows")]
+      {
+        println!("Triggering replay export via F2...");
+        auv_bench_osu::injector::Win32InputActuator::send_virtual_key_press(0x71); // VK_F2
+      }
+      println!("Live play execution sequence finished.");
     }
     Commands::Report => {
       let rec = reconcile_tear_rain_fixture()?;

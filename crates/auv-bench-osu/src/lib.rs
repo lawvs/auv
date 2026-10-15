@@ -11,6 +11,7 @@ pub mod injector;
 pub mod loopback;
 pub mod model;
 pub mod parser;
+pub mod player;
 pub mod projection;
 pub mod reconciliation;
 pub mod simulator;
@@ -24,6 +25,7 @@ pub use injector::{
 pub use loopback::{LoopbackBenchmarkReport, run_loopback_receiver_bench};
 pub use model::{BeatmapModel, CurveType, Difficulty, HitObject, TimingPoint};
 pub use parser::{parse_beatmap_file, parse_beatmap_str};
+pub use player::{LivePlayEdgeRecord, LivePlayReport, LivePlayerConfig, execute_live_play};
 pub use projection::{
   CalibrationPoint, DualCandidateGateReport, EmpiricalSample, PlayfieldProjection, ProjectionBounds, ProjectionCalibrationReport,
   ProjectionDerivationMethod, ProjectionStrategy, circle_radius_playfield, evaluate_empirical_calibration,
