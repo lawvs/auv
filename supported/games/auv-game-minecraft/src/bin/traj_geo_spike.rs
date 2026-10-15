@@ -508,63 +508,70 @@ impl GroundTruthScene {
     Self {
       ground_y: 95.0, // Top of grass block where feet stand
       ground_bounds_x: (-6.0, 6.0),
-      ground_bounds_z: (-8.0, 15.0),
+      ground_bounds_z: (-8.0, 12.0),
       structures: vec![
-        // Stone Wall: 5 wide, 4 high at Z = -5 (X from -2.5 to 2.5, Y from 94.5 to 98.5, Z from -5.5 to -4.5)
+        // Stone Wall: /fill -2 95 -5 2 98 -5 (X from -2.0 to 3.0, Y from 95.0 to 99.0, Z from -5.0 to -4.0)
         AABB {
           name: "stone_wall".to_string(),
-          min_x: -2.5,
-          max_x: 2.5,
-          min_y: 94.5,
-          max_y: 98.5,
-          min_z: -5.5,
-          max_z: -4.5,
+          min_x: -2.0,
+          max_x: 3.0,
+          min_y: 95.0,
+          max_y: 99.0,
+          min_z: -5.0,
+          max_z: -4.0,
         },
-        // Cobblestone Step: 2 wide, 2 high at Z = -3 (X from 0.5 to 2.5, Y from 94.5 to 96.5, Z from -3.5 to -2.5)
+        // Cobblestone Step: /fill 1 95 -3 2 96 -3 (X from 1.0 to 3.0, Y from 95.0 to 97.0, Z from -3.0 to -2.0)
         AABB {
           name: "cobblestone_step".to_string(),
-          min_x: 0.5,
-          max_x: 2.5,
-          min_y: 94.5,
-          max_y: 96.5,
-          min_z: -3.5,
-          max_z: -2.5,
+          min_x: 1.0,
+          max_x: 3.0,
+          min_y: 95.0,
+          max_y: 97.0,
+          min_z: -3.0,
+          max_z: -2.0,
         },
-        // Chest 1 at (-2, 95, -3)
+        // Chest 1 at (-2, 95, -3): /setblock -2 95 -3 (X from -2.0 to -1.0, Y from 95.0 to 96.0, Z from -3.0 to -2.0)
         AABB {
           name: "chest_west".to_string(),
-          min_x: -2.5,
-          max_x: -1.5,
-          min_y: 94.5,
-          max_y: 95.5,
-          min_z: -3.5,
-          max_z: -2.5,
+          min_x: -2.0,
+          max_x: -1.0,
+          min_y: 95.0,
+          max_y: 96.0,
+          min_z: -3.0,
+          max_z: -2.0,
         },
-        // Chest 2 at (0, 95, -3)
+        // Chest 2 at (0, 95, -3): /setblock 0 95 -3 (X from 0.0 to 1.0, Y from 95.0 to 96.0, Z from -3.0 to -2.0)
         AABB {
           name: "chest_center".to_string(),
-          min_x: -0.5,
-          max_x: 0.5,
-          min_y: 94.5,
-          max_y: 95.5,
-          min_z: -3.5,
-          max_z: -2.5,
+          min_x: 0.0,
+          max_x: 1.0,
+          min_y: 95.0,
+          max_y: 96.0,
+          min_z: -3.0,
+          max_z: -2.0,
         },
       ],
     }
   }
 
   pub fn distance_to_scene(&self, p: [f64; 3]) -> f64 {
-    // Distance to ground plane
-    let d_ground = if p[0] >= self.ground_bounds_x.0
-      && p[0] <= self.ground_bounds_x.1
-      && p[2] >= self.ground_bounds_z.0
-      && p[2] <= self.ground_bounds_z.1
-    {
-      (p[1] - self.ground_y).abs()
+    // Distance to ground plane patch
+    let dx = if p[0] < self.ground_bounds_x.0 {
+      self.ground_bounds_x.0 - p[0]
+    } else if p[0] > self.ground_bounds_x.1 {
+      p[0] - self.ground_bounds_x.1
     } else {
-      f64::MAX
+      0.0
     };
+    let dz = if p[2] < self.ground_bounds_z.0 {
+      self.ground_bounds_z.0 - p[2]
+    } else if p[2] > self.ground_bounds_z.1 {
+      p[2] - self.ground_bounds_z.1
+    } else {
+      0.0
+    };
+    let dy = p[1] - self.ground_y;
+    let d_ground = (dx * dx + dy * dy + dz * dz).sqrt();
 
     let mut min_d = d_ground;
     for s in &self.structures {
@@ -576,18 +583,22 @@ impl GroundTruthScene {
     min_d
   }
 
-  /// Generate sample points on the GT surfaces to evaluate coverage / completeness
+  /// Generate sample points on the GT surfaces to evaluate coverage / completeness.
+  /// Visibility rule: Poses advance North (yaw ~180°, pitch 0.0) from Z=12.0 to Z >= -3.7 from eye height 96.62.
+  /// - Ground behind the start position (Z > 12.0) is excluded.
+  /// - Structure top faces are excluded (wall Y=99 and step Y=97 are above eye height; cannot be seen from below at pitch 0).
+  /// - Structure South faces (+Z, max_z) face the oncoming camera and are visible.
   pub fn sample_gt_surface_points(&self, resolution: f64) -> Vec<[f64; 3]> {
     let mut pts = Vec::new();
-    // 1. Ground plane
+    // 1. Ground plane (visible region: Z in [-8.0, 12.0])
     let mut z = self.ground_bounds_z.0;
-    while z <= self.ground_bounds_z.1 {
+    while z <= self.ground_bounds_z.1 + 1e-6 {
       let mut x = self.ground_bounds_x.0;
-      while x <= self.ground_bounds_x.1 {
+      while x <= self.ground_bounds_x.1 + 1e-6 {
         // Skip under structures
         let mut under = false;
         for s in &self.structures {
-          if x >= s.min_x && x <= s.max_x && z >= s.min_z && z <= s.max_z {
+          if x >= s.min_x - 1e-6 && x <= s.max_x + 1e-6 && z >= s.min_z - 1e-6 && z <= s.max_z + 1e-6 {
             under = true;
             break;
           }
@@ -600,23 +611,12 @@ impl GroundTruthScene {
       z += resolution;
     }
 
-    // 2. Structure visible faces
+    // 2. Structure visible faces: South faces (+Z)
     for s in &self.structures {
-      // Top face
       let mut x = s.min_x;
-      while x <= s.max_x {
-        let mut z_s = s.min_z;
-        while z_s <= s.max_z {
-          pts.push([x, s.max_y, z_s]);
-          z_s += resolution;
-        }
-        x += resolution;
-      }
-      // South face (+Z)
-      let mut x = s.min_x;
-      while x <= s.max_x {
+      while x <= s.max_x + 1e-6 {
         let mut y = s.min_y;
-        while y <= s.max_y {
+        while y <= s.max_y + 1e-6 {
           pts.push([x, y, s.max_z]);
           y += resolution;
         }
@@ -715,7 +715,26 @@ pub struct GeometricMetrics {
   pub ground_plane_y_std_m: f64,
   pub passes_median_gate: bool,
   pub passes_completeness_gate: bool,
+  pub passes_ground_gate: bool,
   pub final_verdict: String,
+}
+
+pub fn percentile_linear(sorted: &[f64], p: f64) -> f64 {
+  if sorted.is_empty() {
+    return f64::MAX;
+  }
+  if sorted.len() == 1 {
+    return sorted[0];
+  }
+  let p_clamped = p.clamp(0.0, 1.0);
+  let idx = p_clamped * (sorted.len() - 1) as f64;
+  let lower = idx.floor() as usize;
+  let frac = idx - lower as f64;
+  if lower + 1 < sorted.len() {
+    sorted[lower] + frac * (sorted[lower + 1] - sorted[lower])
+  } else {
+    sorted[lower]
+  }
 }
 
 pub fn evaluate_point_cloud(points: &[GaussianPoint], opacity_thresh: f64, scene: &GroundTruthScene) -> GeometricMetrics {
@@ -730,11 +749,7 @@ pub fn evaluate_point_cloud(points: &[GaussianPoint], opacity_thresh: f64, scene
 
   distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-  let median_dist = if distances.is_empty() {
-    f64::MAX
-  } else {
-    distances[distances.len() / 2]
-  };
+  let median_dist = percentile_linear(&distances, 0.50);
 
   let mean_dist = if distances.is_empty() {
     f64::MAX
@@ -742,11 +757,7 @@ pub fn evaluate_point_cloud(points: &[GaussianPoint], opacity_thresh: f64, scene
     distances.iter().sum::<f64>() / distances.len() as f64
   };
 
-  let p90_dist = if distances.is_empty() {
-    f64::MAX
-  } else {
-    distances[(distances.len() as f64 * 0.90) as usize]
-  };
+  let p90_dist = percentile_linear(&distances, 0.90);
 
   // Ground plane height std deviation
   let ground_pts: Vec<f64> = in_volume.iter().filter(|p| (p.y - 95.0).abs() < 1.0 && p.z > 0.0).map(|p| p.y).collect();
@@ -781,7 +792,8 @@ pub fn evaluate_point_cloud(points: &[GaussianPoint], opacity_thresh: f64, scene
 
   let passes_median = median_dist < 0.5;
   let passes_completeness = completeness > 0.60;
-  let verdict = if passes_median && passes_completeness {
+  let passes_ground = ground_std < 0.20;
+  let verdict = if passes_median && passes_completeness && passes_ground {
     "GO"
   } else {
     "NO-GO"
@@ -799,8 +811,66 @@ pub fn evaluate_point_cloud(points: &[GaussianPoint], opacity_thresh: f64, scene
     ground_plane_y_std_m: ground_std,
     passes_median_gate: passes_median,
     passes_completeness_gate: passes_completeness,
+    passes_ground_gate: passes_ground,
     final_verdict: verdict.to_string(),
   }
+}
+
+pub fn run_evaluator_self_test(scene: &GroundTruthScene) -> Result<GeometricMetrics, String> {
+  println!("\n================================================================================");
+  println!("           Gate 0 Evaluator Self-Test on Synthetic GT Point Cloud");
+  println!("================================================================================");
+  let gt_pts = scene.sample_gt_surface_points(0.5);
+  println!("[Self-Test] Sampled {} ground truth visible surface points (res=0.5m)", gt_pts.len());
+
+  let synthetic_cloud: Vec<GaussianPoint> = gt_pts
+    .iter()
+    .map(|p| GaussianPoint {
+      x: p[0],
+      y: p[1],
+      z: p[2],
+      opacity: 1.0,
+    })
+    .collect();
+
+  let metrics = evaluate_point_cloud(&synthetic_cloud, 0.10, scene);
+
+  println!("Total Synthetic Points:           {}", metrics.total_points);
+  println!("Points in Evaluation Volume:      {}", metrics.points_in_eval_volume);
+  println!(
+    "Median Dist to GT Surface:        {:.3} m (Gate: == 0.000m -> {})",
+    metrics.median_distance_to_gt_m,
+    if metrics.median_distance_to_gt_m.abs() < 1e-4 {
+      "PASS"
+    } else {
+      "FAIL"
+    }
+  );
+  println!("Mean Dist to GT Surface:          {:.3} m", metrics.mean_distance_to_gt_m);
+  println!("P90 Dist to GT Surface:           {:.3} m", metrics.p90_distance_to_gt_m);
+  println!(
+    "Surface Completeness Ratio:       {:.1}% (Gate: == 100.0% -> {})",
+    metrics.surface_completeness_ratio * 100.0,
+    if (metrics.surface_completeness_ratio - 1.0).abs() < 1e-4 {
+      "PASS"
+    } else {
+      "FAIL"
+    }
+  );
+  println!("Ground Plane Y Std Dev:           {:.3} m", metrics.ground_plane_y_std_m);
+  println!("--------------------------------------------------------------------------------");
+  let passed = metrics.median_distance_to_gt_m.abs() < 1e-4 && (metrics.surface_completeness_ratio - 1.0).abs() < 1e-4;
+  println!("SELF-TEST STATUS:                 {}", if passed { "PASSED" } else { "FAILED" });
+  println!("================================================================================\n");
+
+  if metrics.median_distance_to_gt_m.abs() >= 1e-4 {
+    return Err(format!("Evaluator self-test FAILED: expected median 0.000m, got {:.3}m", metrics.median_distance_to_gt_m));
+  }
+  if (metrics.surface_completeness_ratio - 1.0).abs() >= 1e-4 {
+    return Err(format!("Evaluator self-test FAILED: expected completeness 100.0%, got {:.1}%", metrics.surface_completeness_ratio * 100.0));
+  }
+
+  Ok(metrics)
 }
 
 // -----------------------------------------------------------------------------
@@ -843,6 +913,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let do_eval = args.iter().any(|a| a == "--eval" || a == "--all");
   let do_depth = args.iter().any(|a| a == "--depth-fusion" || a == "--all");
 
+  let do_self_test = args.iter().any(|a| a == "--self-test");
+
   let base_dir = PathBuf::from(r"F:\auv\.tmp\traj_geo_spike");
   let dataset_dir = base_dir.join("dataset");
   let images_dir = dataset_dir.join("images");
@@ -852,36 +924,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   fs::create_dir_all(&images_dir)?;
   fs::create_dir_all(&trainer_output_dir)?;
 
-  // Connect to Driver Session
-  println!("[Init] Connecting to local desktop driver session...");
-  let driver_session = auv_driver::open_local().map_err(|e| format!("Failed to open driver session: {e}"))?;
-  let windows = driver_session.window().list().map_err(|e| format!("Failed to list desktop windows: {e}"))?;
-  let target_window = match windows.iter().find(|w| {
-    if let Some(t) = &w.title {
-      if t.to_lowercase().contains("minecraft") || t.contains("新的世界") {
-        return true;
+  // Connect to Driver Session only if live interaction is requested
+  let (driver_session, target_window) = if do_setup || do_capture {
+    println!("[Init] Connecting to local desktop driver session...");
+    let ds = auv_driver::open_local().map_err(|e| format!("Failed to open driver session: {e}"))?;
+    let windows = ds.window().list().map_err(|e| format!("Failed to list desktop windows: {e}"))?;
+    let tw = match windows.iter().find(|w| {
+      if let Some(t) = &w.title {
+        if t.to_lowercase().contains("minecraft") || t.contains("新的世界") {
+          return true;
+        }
       }
-    }
-    if let Some(a) = &w.app_name {
-      if a.to_lowercase().contains("minecraft") || a.to_lowercase().contains("java") {
-        return true;
+      if let Some(a) = &w.app_name {
+        if a.to_lowercase().contains("minecraft") || a.to_lowercase().contains("java") {
+          return true;
+        }
       }
-    }
-    false
-  }) {
-    Some(w) => w.clone(),
-    None => {
-      println!("[Init Error] Visible windows found ({}):", windows.len());
-      for w in &windows {
-        println!("  - ID={}, app={:?}, title={:?}", w.reference.id, w.app_name, w.title);
+      false
+    }) {
+      Some(w) => w.clone(),
+      None => {
+        println!("[Init Error] Visible windows found ({}):", windows.len());
+        for w in &windows {
+          println!("  - ID={}, app={:?}, title={:?}", w.reference.id, w.app_name, w.title);
+        }
+        return Err("Could not find active Minecraft window on desktop".into());
       }
-      return Err("Could not find active Minecraft window on desktop".into());
-    }
-  };
+    };
 
-  let hwnd = target_window.reference.id.parse::<isize>().unwrap_or(0);
-  println!("[Init] Connected to Minecraft window: '{}' (HWND {})", target_window.title.as_deref().unwrap_or("?"), hwnd);
-  win32_input::activate_minecraft(Some(hwnd));
+    let hwnd = tw.reference.id.parse::<isize>().unwrap_or(0);
+    println!("[Init] Connected to Minecraft window: '{}' (HWND {})", tw.title.as_deref().unwrap_or("?"), hwnd);
+    win32_input::activate_minecraft(Some(hwnd));
+    (Some(ds), Some(tw))
+  } else {
+    (None, None)
+  };
 
   // ---------------------------------------------------------------------------
   // T1 Step 1: Calibration Scene Setup
@@ -977,7 +1054,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           .map_err(|e| format!("Failed to read telemetry: {e}"))?
           .ok_or_else(|| "Telemetry file was empty".to_string())?;
 
-        let cap = driver_session.window().capture(&target_window).map_err(|e| format!("Window capture failed: {e}"))?;
+        let cap = driver_session
+          .as_ref()
+          .unwrap()
+          .window()
+          .capture(target_window.as_ref().unwrap())
+          .map_err(|e| format!("Window capture failed: {e}"))?;
 
         let t_after_cap = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
 
@@ -1117,6 +1199,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   // ---------------------------------------------------------------------------
   let scene = GroundTruthScene::new_standard();
 
+  if do_self_test || do_eval || do_depth {
+    run_evaluator_self_test(&scene)?;
+    if do_self_test && !do_eval && !do_depth {
+      println!("[Done] Self-test completed successfully.");
+      return Ok(());
+    }
+  }
+
   if do_eval {
     println!("\n--------------------------------------------------------------------------------");
     println!("Step T3: Geometric Availability Evaluation against Frozen Criteria");
@@ -1189,8 +1279,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       let cx = transforms.cx;
       let cy = transforms.cy;
 
-      let mut fused_points: Vec<GaussianPoint> = Vec::new();
+      use std::collections::{HashMap, HashSet};
+
+      let voxel_size = 0.25f64;
+      let mut voxel_frames: HashMap<(i32, i32, i32), HashSet<usize>> = HashMap::new();
       let start_depth = Instant::now();
+
+      // Track per-frame calibration parameters
+      let mut frame_calibs: Vec<(f64, f64)> = Vec::with_capacity(transforms.frames.len());
 
       for (i, frame) in transforms.frames.iter().enumerate() {
         let img_path = dataset_dir.join(&frame.file_path);
@@ -1199,47 +1295,115 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let depth_map = depth_estimator.estimate(&dyn_img).map_err(|e| format!("Depth estimation failed: {e}"))?;
 
         let c2w = frame.transform_matrix;
+        let w = depth_map.width as usize;
+        let h = depth_map.height as usize;
+
+        // Ground anchor calibration: player eye height above ground is dy = c2w[1][3] - 95.0 (~1.62m)
+        let eye_y = c2w[1][3];
+        let dy = (eye_y - 95.0).max(0.5);
+
+        // Collect ground samples for OLS disparity affine calibration: 1 / d_gt = s * raw + t
+        let mut pairs: Vec<(f64, f64)> = Vec::new();
+        for v_s in (320..460).step_by(4) {
+          let d_gt = dy * fl_y / (v_s as f64 - cy);
+          for u_s in (w / 4..3 * w / 4).step_by(8) {
+            let raw = depth_map.values[v_s * w + u_s] as f64;
+            if raw > 0.05 {
+              pairs.push((raw, d_gt));
+            }
+          }
+        }
+
+        let (s_disp, t_disp) = if pairs.len() >= 2 {
+          let n_p = pairs.len() as f64;
+          let mean_x = pairs.iter().map(|p| p.0).sum::<f64>() / n_p;
+          let mean_y = pairs.iter().map(|p| 1.0 / p.1).sum::<f64>() / n_p;
+          let var_x = pairs.iter().map(|p| (p.0 - mean_x).powi(2)).sum::<f64>();
+          let cov_xy = pairs.iter().map(|p| (p.0 - mean_x) * (1.0 / p.1 - mean_y)).sum::<f64>();
+          if var_x > 1e-8 {
+            let s = cov_xy / var_x;
+            let t = mean_y - s * mean_x;
+            (s, t)
+          } else {
+            (1.0, 0.0)
+          }
+        } else {
+          (1.0, 0.0)
+        };
+
+        frame_calibs.push((s_disp, t_disp));
+
+        if i == 0 {
+          println!("[Depth Calibration Frame 0] dy={:.2}m, s={:.6}, t={:.6} (pairs={})", dy, s_disp, t_disp, pairs.len());
+        }
 
         // Subsample pixels: step by 16 for reasonable point cloud density
         let step = 16usize;
-        let w = depth_map.width as usize;
-        let h = depth_map.height as usize;
 
         for v in (0..h).step_by(step) {
           for u in (0..w).step_by(step) {
             let raw_d = depth_map.values[v * w + u] as f64;
-            // In Depth Anything V2, depth values are relative depth or inverse depth
-            // Calibrate to metric scale using known camera height to ground (dy ~ 1.62m)
-            if raw_d <= 0.05 || raw_d > 50.0 {
+            if raw_d <= 0.05 {
               continue;
             }
-            let z_cam = raw_d;
-            let x_cam = (u as f64 - cx) * z_cam / fl_x;
-            let y_cam = (v as f64 - cy) * z_cam / fl_y;
+
+            // Calibrated metric depth via affine disparity model
+            let pred_disp = s_disp * raw_d + t_disp;
+            if pred_disp <= 0.01 {
+              continue;
+            }
+            let d_metric = 1.0 / pred_disp;
+            if d_metric < 0.1 || d_metric > 35.0 {
+              continue;
+            }
+
+            // OpenGL camera space derived from effective_world_to_camera_matrix / c2w:
+            // Right is +X_cam, Up is +Y_cam, View forward is -Z_cam
+            let x_cam = (u as f64 - cx) * d_metric / fl_x;
+            let y_cam = (cy - v as f64) * d_metric / fl_y;
+            let z_cam = -d_metric;
 
             // Camera-to-world transform: P_w = R * P_c + t
             let xw = c2w[0][0] * x_cam + c2w[0][1] * y_cam + c2w[0][2] * z_cam + c2w[0][3];
             let yw = c2w[1][0] * x_cam + c2w[1][1] * y_cam + c2w[1][2] * z_cam + c2w[1][3];
             let zw = c2w[2][0] * x_cam + c2w[2][1] * y_cam + c2w[2][2] * z_cam + c2w[2][3];
 
-            fused_points.push(GaussianPoint {
-              x: xw,
-              y: yw,
-              z: zw,
-              opacity: 1.0,
-            });
+            let vx = (xw / voxel_size).floor() as i32;
+            let vy = (yw / voxel_size).floor() as i32;
+            let vz = (zw / voxel_size).floor() as i32;
+
+            voxel_frames.entry((vx, vy, vz)).or_default().insert(i);
           }
         }
 
         if (i + 1) % 15 == 0 || i + 1 == transforms.frames.len() {
-          println!("  [Depth-Fusion] Processed {}/{} frames (accumulated {} points)", i + 1, transforms.frames.len(), fused_points.len());
+          println!("  [Depth-Fusion] Processed {}/{} frames (unique voxels: {})", i + 1, transforms.frames.len(), voxel_frames.len());
         }
       }
 
       let depth_duration = start_depth.elapsed();
-      println!("[Depth-Fusion] Finished in {:.2}s with {} total points", depth_duration.as_secs_f64(), fused_points.len());
+      println!("[Depth-Fusion] 75 frames processed in {:.2}s. Total distinct voxels: {}", depth_duration.as_secs_f64(), voxel_frames.len());
 
-      let depth_metrics = evaluate_point_cloud(&fused_points, 0.5, &scene);
+      // Voxel consensus: keep only voxels observed by >= 3 frames
+      let consensus_voxels: Vec<GaussianPoint> = voxel_frames
+        .into_iter()
+        .filter(|(_coord, frames)| frames.len() >= 3)
+        .map(|((vx, vy, vz), _frames)| {
+          let x = (vx as f64 + 0.5) * voxel_size;
+          let y = (vy as f64 + 0.5) * voxel_size;
+          let z = (vz as f64 + 0.5) * voxel_size;
+          GaussianPoint {
+            x,
+            y,
+            z,
+            opacity: 1.0,
+          }
+        })
+        .collect();
+
+      println!("[Voxel Consensus] Voxels observed by >= 3 frames: {}", consensus_voxels.len());
+
+      let depth_metrics = evaluate_point_cloud(&consensus_voxels, 0.5, &scene);
 
       println!("\n================ DEPTH-FUSION GEOMETRIC EVALUATION REPORT ================");
       println!("Total Backprojected Points:       {}", depth_metrics.total_points);
