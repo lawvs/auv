@@ -211,4 +211,55 @@ mod tests {
     assert_eq!(report.count_miss, 0);
     assert!((report.accuracy - 1.0).abs() < 1e-6);
   }
+
+  #[test]
+  fn test_simulator_on_tear_rain_hard_achieves_perfect_score() {
+    let fixture_path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/351190-cYsmix-Tear-Rain-Hard.osu");
+    let model = parse_beatmap_file(fixture_path).expect("parse tear rain hard beatmap");
+    let plan = synthesize_plan(&model);
+
+    let report = simulate_plan_offline(&model, &plan);
+
+    println!("Tear Rain Hard total objects: {}", report.total_objects);
+    assert!(report.total_objects > 400, "Hard should have significantly more objects than Normal");
+    assert_eq!(report.count_300, report.total_objects, "all objects must hit 300 on synthetic plan");
+    assert_eq!(report.count_miss, 0);
+    assert!((report.accuracy - 1.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn test_simulator_on_tear_rain_insane_achieves_perfect_score() {
+    let fixture_path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/351190-cYsmix-Tear-Rain-Insane.osu");
+    let model = parse_beatmap_file(fixture_path).expect("parse tear rain insane beatmap");
+    let plan = synthesize_plan(&model);
+
+    let report = simulate_plan_offline(&model, &plan);
+
+    println!("Tear Rain Insane total objects: {}", report.total_objects);
+    assert!(report.total_objects > 550, "Insane should have significantly more objects than Hard");
+    assert_eq!(report.count_300, report.total_objects, "all objects must hit 300 on synthetic plan");
+    assert_eq!(report.count_miss, 0);
+    assert!((report.accuracy - 1.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn test_simulator_timing_offset_sensitivity_reproduces_od7_boundary() {
+    let fixture_path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/351190-cYsmix-Tear-Rain-Insane.osu");
+    let model = parse_beatmap_file(fixture_path).expect("parse tear rain insane beatmap");
+    let mut plan_shifted = synthesize_plan(&model);
+
+    // Shift key events by +37.0ms (simulating the uncompensated systematic audio latency)
+    for k in &mut plan_shifted.key_schedule {
+      k.time_ms += 37.0;
+    }
+    let report = simulate_plan_offline(&model, &plan_shifted);
+    println!(
+      "Shifted +37ms: 300s={}, 100s={}, 50s={}, misses={}, mean_abs_err={:.2}ms",
+      report.count_300, report.count_100, report.count_50, report.count_miss, report.mean_absolute_timing_error_ms
+    );
+    // At OD 7, 300 hit window is 80 - 6*7 = 38.0ms. At +37ms, timing error is exactly 37.0ms.
+    assert_eq!(report.count_miss, 0);
+    assert!((report.mean_absolute_timing_error_ms - 37.0).abs() < 1e-3);
+  }
 }
+
