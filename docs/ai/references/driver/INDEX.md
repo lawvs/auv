@@ -96,6 +96,7 @@ Count: **75**
 - [qqmusic-background-control.md](qqmusic-background-control.md): Living document tracking QQ Music background control without stealing foreground focus across SMTC, CoreAudio, and UIA phases.
 - [windows-capture-parity.md](windows-capture-parity.md): Living document tracking Windows capture latency parity with macOS ScreenCaptureKit across baseline, WGC v1, and GPU-load degradation phases.
 - [`2026-10-14-osu-phase0-s1a-report.md`](2026-10-14-osu-phase0-s1a-report.md): osu! Windows 注入基准与即兴演奏器 Phase 0（执行器骨架、高精度 QPC 混合自旋、P99 0.525ms <= 16.6ms 门禁、50/50 边缘对账）与 S1 Part A（真实谱面 Tear Rain Normal 独立官方对账、4ms 轨迹与交替按键计划合成）验证报告。
+- [`2026-10-15-osu-partb-overnight-accounting.md`](2026-10-15-osu-partb-overnight-accounting.md): osu! Windows 注入与即兴演奏器 Part B 夜间实机跑全面审计与对账报告（13 次运行全量流水、重试按键路径、player.rs 演进与 Object-295 锚点修复、谱面来源、3 点投影自洽性口径核实、运行时日志时钟同步、+37ms 系统偏移复算与 game.ini AudioOffset 补偿归零、测试集数量对账）。
 
 
 ## Related
